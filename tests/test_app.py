@@ -79,6 +79,10 @@ def test_settings_front_single_and_no_teeth() -> None:
         {"antID": 0, "teeth": {"front": [0, 50]}},
         {"antID": 0, "teeth": {"rear": [-11, 34]}},
         {"antID": 0, "teeth": {"front": [True]}},
+        {"antID": float("inf")},
+        {"antID": float("nan")},
+        {"antID": 0, "teeth": {"front": [float("inf")]}},
+        {"antID": 0, "teeth": {"rear": [float("nan")]}},
     ],
 )
 def test_settings_validation_errors(invalid_payload: Any) -> None:
@@ -150,6 +154,40 @@ def test_hud_shifting_device_packets() -> None:
     # Common Page 82 with battery_id = 15 (0xF1) must not raise IndexError
     dev._on_data([82, 0xFF, 0xF1, 0x00, 0x00, 0x00, 0x00, 0x13])
     assert len(received_batteries) == 2
+    assert dev.last_rx_time is not None
+
+
+def test_worker_inactivity_watchdog() -> None:
+    lost_count = 0
+
+    def on_lost() -> None:
+        nonlocal lost_count
+        lost_count += 1
+
+    worker = ant_worker.AntShiftingWorker(
+        ant_id=0,
+        on_shift=lambda _: None,
+        on_battery=lambda _: None,
+        on_connection_lost=on_lost,
+        inactivity_timeout=10.0,
+    )
+    mock_device = MagicMock()
+    mock_device.last_rx_time = 100.0
+    worker._device = mock_device
+
+    # Before timeout (elapsed 5s < 10s)
+    assert not worker.check_inactivity(now=105.0)
+    assert lost_count == 0
+    assert mock_device.last_rx_time == 100.0
+
+    # At/after timeout (elapsed 10s >= 10s)
+    assert worker.check_inactivity(now=110.0)
+    assert lost_count == 1
+    assert mock_device.last_rx_time is None
+
+    # Subsequent check without new packet does not re-trigger
+    assert not worker.check_inactivity(now=120.0)
+    assert lost_count == 1
 
 
 def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
@@ -178,6 +216,11 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
     assert win.rear_value_label.text() == "12/12"
     assert win.ratio_block.isVisible()
     assert win.ratio_value_label.text() == "4.55"
+
+    # Differential update: repeating identical ShiftData should not trigger adjustSize()
+    with patch.object(win, "adjustSize") as mock_adjust:
+        win.update_shift_data(ShiftData(gear_front=2, total_front=2, gear_rear=12, total_rear=12))
+        assert mock_adjust.call_count == 0
 
     win.update_battery_data(BatteryData(battery_id=ShiftingSystemID.LeftShifter.value, status=BatteryStatus.New))
     qapp.processEvents()

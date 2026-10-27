@@ -3,41 +3,25 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
+import time
 from typing import Callable, Optional
 
 from openant.devices import ANTPLUS_NETWORK_KEY
-from openant.devices.common import BatteryData, BatteryStatus
-from openant.devices.shift import ShiftData, Shifting, ShiftingSystemID
+from openant.devices.common import BatteryData
+from openant.devices.shift import ShiftData, Shifting
 from openant.easy.node import Node
 
 _logger = logging.getLogger(__name__)
 
-# ANT+ Shifting Profile (Device Type 0x22 / 34) constants
+# ANT+ Shifting Profile (Device Type 0x22 / 34)
 SHIFTING_DEVICE_TYPE = 0x22  # 34
-INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
-INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
-
-VALID_BATTERY_STATUSES = {
-    BatteryStatus.New,
-    BatteryStatus.Good,
-    BatteryStatus.Ok,
-    BatteryStatus.Low,
-    BatteryStatus.Critical,
-    BatteryStatus.Charging,
-}
-
-BATTERY_COMPONENT_KEYS = {
-    ShiftingSystemID.LeftShifter: "L",
-    ShiftingSystemID.RightShifter: "R",
-    ShiftingSystemID.FrontDerailleur: "FD",
-    ShiftingSystemID.RearDerailleur: "RD",
-}
+DEFAULT_INACTIVITY_TIMEOUT = 30.0
 
 
 class HudShiftingDevice(Shifting):  # type: ignore[misc]
     """
     ANT+ Shifting device (Device Type 0x22 / 34) subclass that safely decodes
-    Page 1 (Shift System Status), Page 4 (Trim), and Common Page 82 (Battery Status).
+    Page 1 (Shift System Status) and Common Page 82 (Battery Status).
     """
 
     def __init__(
@@ -51,6 +35,7 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
     ):
         self._on_shift_callback = on_shift_callback
         self._on_battery_callback = on_battery_callback
+        self.last_rx_time: Optional[float] = None
         super().__init__(
             node=node,
             device_id=device_id,
@@ -59,6 +44,10 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         )
         # Ensure all 16 4-bit battery IDs (0..15) can be indexed without IndexError
         self.data["batteries"] = [BatteryData() for _ in range(16)]
+
+    def _on_data(self, data: list[int]) -> None:
+        self.last_rx_time = time.monotonic()
+        super()._on_data(data)
 
     def on_device_data(self, page: int, page_name: str, data: ShiftData) -> None:
         if page == 0x01 and isinstance(data, ShiftData) and self._on_shift_callback is not None:
@@ -94,26 +83,9 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
 
             self.on_device_data(page, "shift_system_status", shift)
 
-        # Data Page 4 (0x04): TrimAdjust (preserve existing gear_front / gear_rear)
-        elif page == 0x04 and len(data) >= 6:
-            self._event_count[2][0] = self._event_count[2][1]
-            self._event_count[2][1] = data[1]
-
-            shift = self.data["shift"]
-            shift.max_trim_rear = data[2]
-            shift.max_trim_front = data[3]
-            shift.current_trim_rear = data[4]
-            shift.current_trim_front = data[5]
-
-        elif page in (0x02, 0x03):
-            try:
-                super().on_data(data)
-            except IndexError:
-                _logger.debug("Ignored truncated page %#04x data: %s", page, data)
-
 
 class AntShiftingWorker:
-    """Background worker managing the openant Node and Shifting profile channel."""
+    """Background worker managing the openant Node, Shifting profile channel, and inactivity watchdog."""
 
     def __init__(
         self,
@@ -121,13 +93,16 @@ class AntShiftingWorker:
         on_shift: Callable[[ShiftData], None],
         on_battery: Callable[[BatteryData], None],
         on_connection_lost: Optional[Callable[[], None]] = None,
+        inactivity_timeout: float = DEFAULT_INACTIVITY_TIMEOUT,
     ):
         self.ant_id = ant_id
         self._on_shift = on_shift
         self._on_battery = on_battery
         self._on_connection_lost = on_connection_lost
+        self._inactivity_timeout = inactivity_timeout
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._watchdog_thread: Optional[threading.Thread] = None
         self._node: Optional[Node] = None
         self._device: Optional[HudShiftingDevice] = None
         self._lock = threading.Lock()
@@ -138,7 +113,9 @@ class AntShiftingWorker:
             return
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_loop, name="AntShiftingWorker", daemon=True)
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="AntShiftingWatchdog", daemon=True)
         self._thread.start()
+        self._watchdog_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -162,6 +139,35 @@ class AntShiftingWorker:
 
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
+        if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=1.0)
+
+    def check_inactivity(self, now: Optional[float] = None) -> bool:
+        """
+        Check if data reception has timed out due to sensor sleep or range loss.
+        Returns True if inactivity timeout was triggered.
+        """
+        if self._inactivity_timeout <= 0:
+            return False
+
+        with self._lock:
+            device = self._device
+
+        if device is None or device.last_rx_time is None:
+            return False
+
+        current_time = time.monotonic() if now is None else now
+        if current_time - device.last_rx_time >= self._inactivity_timeout:
+            device.last_rx_time = None
+            _logger.info("ANT+ Shifting sensor inactivity timeout; resetting HUD display")
+            if self._on_connection_lost is not None:
+                self._on_connection_lost()
+            return True
+        return False
+
+    def _watchdog_loop(self) -> None:
+        while not self._stop_event.wait(timeout=1.0):
+            self.check_inactivity()
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -170,6 +176,12 @@ class AntShiftingWorker:
             connected = False
             try:
                 node = Node()
+                with self._lock:
+                    if self._stop_event.is_set():
+                        node.stop()
+                        return
+                    self._node = node
+
                 node.set_network_key(0x00, ANTPLUS_NETWORK_KEY)
                 device = HudShiftingDevice(
                     node,
@@ -183,7 +195,6 @@ class AntShiftingWorker:
                         device.close_channel()
                         node.stop()
                         return
-                    self._node = node
                     self._device = device
 
                 self._last_error_msg = None

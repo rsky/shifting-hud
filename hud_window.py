@@ -26,13 +26,26 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ant_worker import (
-    BATTERY_COMPONENT_KEYS,
-    INVALID_GEAR_FRONT,
-    INVALID_GEAR_REAR,
-    VALID_BATTERY_STATUSES,
-)
 from settings import AppSettings
+
+INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
+INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
+
+VALID_BATTERY_STATUSES = {
+    BatteryStatus.New,
+    BatteryStatus.Good,
+    BatteryStatus.Ok,
+    BatteryStatus.Low,
+    BatteryStatus.Critical,
+    BatteryStatus.Charging,
+}
+
+BATTERY_COMPONENT_KEYS = {
+    ShiftingSystemID.LeftShifter: "L",
+    ShiftingSystemID.RightShifter: "R",
+    ShiftingSystemID.FrontDerailleur: "FD",
+    ShiftingSystemID.RearDerailleur: "RD",
+}
 
 
 def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Optional[int]]:
@@ -176,45 +189,65 @@ class ShiftingHudWindow(QWidget):
 
     def reset_display(self) -> None:
         """Reset all HUD metrics to '-' when connection is lost."""
-        self.front_value_label.setText("-")
-        self.rear_value_label.setText("-")
-        self.ratio_value_label.setText("-")
-        self.ratio_block.setVisible(False)
+        changed = False
+        if self.front_value_label.text() != "-":
+            self.front_value_label.setText("-")
+            changed = True
+        if self.rear_value_label.text() != "-":
+            self.rear_value_label.setText("-")
+            changed = True
+        if self.ratio_value_label.text() != "-" or not self.ratio_block.isHidden():
+            self.ratio_value_label.setText("-")
+            self.ratio_block.setVisible(False)
+            changed = True
         for label in self.battery_value_labels.values():
-            label.setText("-")
-        self.adjustSize()
-        self.update()
+            if label.text() != "-":
+                label.setText("-")
+                changed = True
+        if changed:
+            self.adjustSize()
+            self.update()
 
     def update_shift_data(self, data: ShiftData) -> None:
-        """Update FRONT, REAR, and optional GEAR RATIO from ShiftData."""
+        """Update FRONT, REAR, and optional GEAR RATIO from ShiftData (only redraws on change)."""
         front_text, valid_front = format_gear_text(data.gear_front, data.total_front, INVALID_GEAR_FRONT)
         rear_text, valid_rear = format_gear_text(data.gear_rear, data.total_rear, INVALID_GEAR_REAR)
 
-        self.front_value_label.setText(front_text)
-        self.rear_value_label.setText(rear_text)
-
         ratio = self.settings.calculate_gear_ratio(valid_front, valid_rear)
-        if ratio is not None:
-            self.ratio_value_label.setText(f"{ratio:.2f}")
-            self.ratio_block.setVisible(True)
-        else:
-            self.ratio_value_label.setText("-")
-            self.ratio_block.setVisible(False)
+        ratio_visible = ratio is not None
+        ratio_text = f"{ratio:.2f}" if ratio is not None else "-"
 
-        self.adjustSize()
-        self.update()
+        changed = False
+        if self.front_value_label.text() != front_text:
+            self.front_value_label.setText(front_text)
+            changed = True
+        if self.rear_value_label.text() != rear_text:
+            self.rear_value_label.setText(rear_text)
+            changed = True
+        if self.ratio_value_label.text() != ratio_text:
+            self.ratio_value_label.setText(ratio_text)
+            changed = True
+        if self.ratio_block.isHidden() == ratio_visible:
+            self.ratio_block.setVisible(ratio_visible)
+            changed = True
+
+        if changed:
+            self.adjustSize()
+            self.update()
 
     def update_battery_data(self, data: BatteryData) -> None:
-        """Update L, R, FD, RD battery display from BatteryData."""
+        """Update L, R, FD, RD battery display from BatteryData (only redraws on change)."""
         system_id = ShiftingSystemID(data.battery_id) if data.battery_id != 0xFF else ShiftingSystemID.Unknown
         component_key = BATTERY_COMPONENT_KEYS.get(system_id)
         if component_key is None:
             return
 
         status_text = format_battery_status(data.status)
-        self.battery_value_labels[component_key].setText(status_text)
-        self.adjustSize()
-        self.update()
+        label = self.battery_value_labels[component_key]
+        if label.text() != status_text:
+            label.setText(status_text)
+            self.adjustSize()
+            self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         painter = QPainter(self)
