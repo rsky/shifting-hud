@@ -5,7 +5,6 @@ import json
 import logging
 import sys
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -16,8 +15,18 @@ from openant.devices.common import BatteryData, BatteryStatus, DeviceType
 from openant.devices.shift import ShiftData, Shifting, ShiftingSystemID
 from openant.easy.exception import AntException
 from openant.easy.node import Node
-from PySide6.QtCore import QPoint, QObject, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QKeySequence, QMouseEvent, QPainter, QPen, QShortcut
+from PySide6.QtCore import QObject, QPoint, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QContextMenuEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -62,9 +71,7 @@ class TeethSettings:
         if self.front is not None:
             object.__setattr__(self, "front", sorted(float(x) for x in self.front))
         if self.rear is not None:
-            object.__setattr__(
-                self, "rear", sorted((float(x) for x in self.rear), reverse=True)
-            )
+            object.__setattr__(self, "rear", sorted((float(x) for x in self.rear), reverse=True))
 
 
 @dataclass(frozen=True)
@@ -72,9 +79,7 @@ class AppSettings:
     ant_id: int
     teeth: Optional[TeethSettings] = None
 
-    def calculate_gear_ratio(
-        self, gear_front: Optional[int], gear_rear: Optional[int]
-    ) -> Optional[float]:
+    def calculate_gear_ratio(self, gear_front: Optional[int], gear_rear: Optional[int]) -> Optional[float]:
         """
         Calculate gear ratio: teeth.front[current_front] / teeth.rear[current_rear].
 
@@ -131,16 +136,12 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
         rear_list: Optional[list[float]] = None
 
         if "front" in teeth_raw and teeth_raw["front"] is not None:
-            if not isinstance(teeth_raw["front"], list) or not all(
-                _is_valid_number(x) for x in teeth_raw["front"]
-            ):
+            if not isinstance(teeth_raw["front"], list) or not all(_is_valid_number(x) for x in teeth_raw["front"]):
                 raise ValueError("'teeth.front' must be an array of numbers")
             front_list = [float(x) for x in teeth_raw["front"]]
 
         if "rear" in teeth_raw and teeth_raw["rear"] is not None:
-            if not isinstance(teeth_raw["rear"], list) or not all(
-                _is_valid_number(x) for x in teeth_raw["rear"]
-            ):
+            if not isinstance(teeth_raw["rear"], list) or not all(_is_valid_number(x) for x in teeth_raw["rear"]):
                 raise ValueError("'teeth.rear' must be an array of numbers")
             rear_list = [float(x) for x in teeth_raw["rear"]]
 
@@ -201,11 +202,11 @@ def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Op
 def format_battery_status(status: BatteryStatus) -> str:
     """Format BatteryStatus enum to display string or '-'."""
     if status in VALID_BATTERY_STATUSES:
-        return status.name
+        return str(status.name)
     return "-"
 
 
-class HudShiftingDevice(Shifting):
+class HudShiftingDevice(Shifting):  # type: ignore[misc]
     """
     ANT+ Shifting device (Device Type 0x22 / 34) subclass that safely decodes
     Page 1 (Shift System Status), Page 4 (Trim), and Common Page 82 (Battery Status).
@@ -295,9 +296,7 @@ class AntShiftingWorker:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run_loop, name="AntShiftingWorker", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run_loop, name="AntShiftingWorker", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -392,10 +391,7 @@ class ShiftingHudWindow(QWidget):
         self._drag_offset: Optional[QPoint] = None
 
         self.setWindowTitle("Shifting HUD")
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
         self._init_ui()
@@ -412,15 +408,9 @@ class ShiftingHudWindow(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(24)
 
-        self.front_block, self.front_value_label = self._create_main_metric_block(
-            "FRONT", "-"
-        )
-        self.rear_block, self.rear_value_label = self._create_main_metric_block(
-            "REAR", "-"
-        )
-        self.ratio_block, self.ratio_value_label = self._create_main_metric_block(
-            "RATIO", "-"
-        )
+        self.front_block, self.front_value_label = self._create_main_metric_block("FRONT", "-")
+        self.rear_block, self.rear_value_label = self._create_main_metric_block("REAR", "-")
+        self.ratio_block, self.ratio_value_label = self._create_main_metric_block("RATIO", "-")
         self.ratio_block.setVisible(False)
 
         main_layout.addWidget(self.front_block)
@@ -448,9 +438,7 @@ class ShiftingHudWindow(QWidget):
         root_layout.addWidget(divider)
         root_layout.addLayout(sub_layout)
 
-    def _create_main_metric_block(
-        self, title: str, initial_value: str
-    ) -> tuple[QWidget, QLabel]:
+    def _create_main_metric_block(self, title: str, initial_value: str) -> tuple[QWidget, QLabel]:
         container = QWidget(self)
         container.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
         layout = QVBoxLayout(container)
@@ -471,45 +459,30 @@ class ShiftingHudWindow(QWidget):
         value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         value_label.setMinimumWidth(68)
         value_label.setStyleSheet(
-            "color: rgba(255, 255, 255, 255);"
-            "font-size: 28px;"
-            "font-weight: 800;"
-            "background: transparent;"
+            "color: rgba(255, 255, 255, 255);font-size: 28px;font-weight: 800;background: transparent;"
         )
 
         layout.addWidget(title_label)
         layout.addWidget(value_label)
         return container, value_label
 
-    def _create_sub_metric_block(
-        self, title: str, initial_value: str
-    ) -> tuple[QWidget, QLabel]:
+    def _create_sub_metric_block(self, title: str, initial_value: str) -> tuple[QWidget, QLabel]:
         container = QWidget(self)
         layout = QHBoxLayout(container)
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(4)
 
         title_label = QLabel(f"{title}:", container)
-        title_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
+        title_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         title_label.setStyleSheet(
-            "color: rgba(170, 180, 195, 255);"
-            "font-size: 11px;"
-            "font-weight: 700;"
-            "background: transparent;"
+            "color: rgba(170, 180, 195, 255);font-size: 11px;font-weight: 700;background: transparent;"
         )
 
         value_label = QLabel(initial_value, container)
-        value_label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        )
+        value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         value_label.setMinimumWidth(28)
         value_label.setStyleSheet(
-            "color: rgba(255, 255, 255, 255);"
-            "font-size: 11px;"
-            "font-weight: 600;"
-            "background: transparent;"
+            "color: rgba(255, 255, 255, 255);font-size: 11px;font-weight: 600;background: transparent;"
         )
 
         layout.addWidget(title_label)
@@ -523,12 +496,8 @@ class ShiftingHudWindow(QWidget):
 
     def update_shift_data(self, data: ShiftData) -> None:
         """Update FRONT, REAR, and optional GEAR RATIO from ShiftData."""
-        front_text, valid_front = format_gear_text(
-            data.gear_front, data.total_front, INVALID_GEAR_FRONT
-        )
-        rear_text, valid_rear = format_gear_text(
-            data.gear_rear, data.total_rear, INVALID_GEAR_REAR
-        )
+        front_text, valid_front = format_gear_text(data.gear_front, data.total_front, INVALID_GEAR_FRONT)
+        rear_text, valid_rear = format_gear_text(data.gear_rear, data.total_rear, INVALID_GEAR_REAR)
 
         self.front_value_label.setText(front_text)
         self.rear_value_label.setText(rear_text)
@@ -556,7 +525,7 @@ class ShiftingHudWindow(QWidget):
         self.adjustSize()
         self.update()
 
-    def paintEvent(self, event) -> None:  # noqa: N802
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
@@ -567,18 +536,13 @@ class ShiftingHudWindow(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_offset = (
-                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            )
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if (
-            self._drag_offset is not None
-            and event.buttons() & Qt.MouseButton.LeftButton
-        ):
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
             event.accept()
         else:
@@ -591,7 +555,7 @@ class ShiftingHudWindow(QWidget):
         else:
             super().mouseReleaseEvent(event)
 
-    def contextMenuEvent(self, event) -> None:  # noqa: N802
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802
         menu = QMenu(self)
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.close)
@@ -600,9 +564,7 @@ class ShiftingHudWindow(QWidget):
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="ANT+ Shifting (Di2 / AXS) HUD Desktop Application"
-    )
+    parser = argparse.ArgumentParser(description="ANT+ Shifting (Di2 / AXS) HUD Desktop Application")
     parser.add_argument(
         "-s",
         "--settings",
