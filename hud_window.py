@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+from typing import Optional
+
+from openant.devices.common import BatteryData, BatteryStatus
+from openant.devices.shift import ShiftData, ShiftingSystemID
+from PySide6.QtCore import QObject, QPoint, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QContextMenuEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QShortcut,
+)
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ant_worker import (
+    BATTERY_COMPONENT_KEYS,
+    INVALID_GEAR_FRONT,
+    INVALID_GEAR_REAR,
+    VALID_BATTERY_STATUSES,
+)
+from settings import AppSettings
+
+
+def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Optional[int]]:
+    """
+    Format gear text as '<current>/<total>' or '-' when unknown/invalid.
+    Returns (formatted_text, valid_current_gear_or_None).
+    """
+    if 1 <= gear < invalid_value and 1 <= total < invalid_value and gear <= total:
+        return f"{gear}/{total}", gear
+    return "-", None
+
+
+def format_battery_status(status: BatteryStatus) -> str:
+    """Format BatteryStatus enum to display string or '-'."""
+    if status in VALID_BATTERY_STATUSES:
+        return str(status.name)
+    return "-"
+
+
+class AntShiftingBridge(QObject):
+    """Qt Signal bridge for thread-safe UI updates from the openant worker thread."""
+
+    shift_data_received = Signal(object)  # ShiftData
+    battery_data_received = Signal(object)  # BatteryData
+    connection_lost = Signal()
+
+
+class ShiftingHudWindow(QWidget):
+    """
+    Frameless, always-on-top, rounded-corner translucent HUD window with opaque text.
+    """
+
+    CORNER_RADIUS = 16
+    BG_COLOR = QColor(18, 20, 26, 185)
+    BORDER_COLOR = QColor(255, 255, 255, 45)
+
+    MAIN_TITLE_STYLE = (
+        "color: rgba(185, 195, 210, 255);font-size: 11px;font-weight: 700;letter-spacing: 1px;background: transparent;"
+    )
+    MAIN_VALUE_STYLE = "color: rgba(255, 255, 255, 255);font-size: 28px;font-weight: 800;background: transparent;"
+    SUB_TITLE_STYLE = "color: rgba(170, 180, 195, 255);font-size: 11px;font-weight: 700;background: transparent;"
+    SUB_VALUE_STYLE = "color: rgba(255, 255, 255, 255);font-size: 11px;font-weight: 600;background: transparent;"
+    DIVIDER_STYLE = "background-color: rgba(255, 255, 255, 40); border: none;"
+
+    def __init__(self, settings: AppSettings, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.settings = settings
+        self._drag_offset: Optional[QPoint] = None
+
+        self.setWindowTitle("Shifting HUD")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        self._init_ui()
+        self._init_shortcuts()
+
+    def _init_ui(self) -> None:
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(20, 14, 20, 14)
+        root_layout.setSpacing(8)
+        root_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
+
+        # --- Main Content (FRONT, REAR, optional GEAR RATIO) ---
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(24)
+
+        self.front_block, self.front_value_label = self._create_main_metric_block("FRONT", "-")
+        self.rear_block, self.rear_value_label = self._create_main_metric_block("REAR", "-")
+        self.ratio_block, self.ratio_value_label = self._create_main_metric_block("RATIO", "-")
+        self.ratio_block.setVisible(False)
+
+        main_layout.addWidget(self.front_block)
+        main_layout.addWidget(self.rear_block)
+        main_layout.addWidget(self.ratio_block)
+
+        # Subtle divider line between main and sub content
+        divider = QFrame(self)
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(self.DIVIDER_STYLE)
+
+        # --- Sub Content (Batteries: L, R, FD, RD) ---
+        sub_layout = QHBoxLayout()
+        sub_layout.setContentsMargins(0, 2, 0, 0)
+        sub_layout.setSpacing(16)
+
+        self.battery_value_labels: dict[str, QLabel] = {}
+        for key in ("L", "R", "FD", "RD"):
+            block, val_label = self._create_sub_metric_block(key, "-")
+            self.battery_value_labels[key] = val_label
+            sub_layout.addWidget(block)
+
+        root_layout.addLayout(main_layout)
+        root_layout.addWidget(divider)
+        root_layout.addLayout(sub_layout)
+
+    def _create_main_metric_block(self, title: str, initial_value: str) -> tuple[QWidget, QLabel]:
+        container = QWidget(self)
+        container.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(2)
+
+        title_label = QLabel(title, container)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet(self.MAIN_TITLE_STYLE)
+
+        value_label = QLabel(initial_value, container)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        value_label.setMinimumWidth(68)
+        value_label.setStyleSheet(self.MAIN_VALUE_STYLE)
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return container, value_label
+
+    def _create_sub_metric_block(self, title: str, initial_value: str) -> tuple[QWidget, QLabel]:
+        container = QWidget(self)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(4)
+
+        title_label = QLabel(f"{title}:", container)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        title_label.setStyleSheet(self.SUB_TITLE_STYLE)
+
+        value_label = QLabel(initial_value, container)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        value_label.setMinimumWidth(28)
+        value_label.setStyleSheet(self.SUB_VALUE_STYLE)
+
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return container, value_label
+
+    def _init_shortcuts(self) -> None:
+        for key in (Qt.Key.Key_Escape, Qt.Key.Key_Q):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(self.close)
+
+    def reset_display(self) -> None:
+        """Reset all HUD metrics to '-' when connection is lost."""
+        self.front_value_label.setText("-")
+        self.rear_value_label.setText("-")
+        self.ratio_value_label.setText("-")
+        self.ratio_block.setVisible(False)
+        for label in self.battery_value_labels.values():
+            label.setText("-")
+        self.adjustSize()
+        self.update()
+
+    def update_shift_data(self, data: ShiftData) -> None:
+        """Update FRONT, REAR, and optional GEAR RATIO from ShiftData."""
+        front_text, valid_front = format_gear_text(data.gear_front, data.total_front, INVALID_GEAR_FRONT)
+        rear_text, valid_rear = format_gear_text(data.gear_rear, data.total_rear, INVALID_GEAR_REAR)
+
+        self.front_value_label.setText(front_text)
+        self.rear_value_label.setText(rear_text)
+
+        ratio = self.settings.calculate_gear_ratio(valid_front, valid_rear)
+        if ratio is not None:
+            self.ratio_value_label.setText(f"{ratio:.2f}")
+            self.ratio_block.setVisible(True)
+        else:
+            self.ratio_value_label.setText("-")
+            self.ratio_block.setVisible(False)
+
+        self.adjustSize()
+        self.update()
+
+    def update_battery_data(self, data: BatteryData) -> None:
+        """Update L, R, FD, RD battery display from BatteryData."""
+        system_id = ShiftingSystemID(data.battery_id) if data.battery_id != 0xFF else ShiftingSystemID.Unknown
+        component_key = BATTERY_COMPONENT_KEYS.get(system_id)
+        if component_key is None:
+            return
+
+        status_text = format_battery_status(data.status)
+        self.battery_value_labels[component_key].setText(status_text)
+        self.adjustSize()
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setBrush(self.BG_COLOR)
+        painter.setPen(QPen(self.BORDER_COLOR, 1.2))
+        painter.drawRoundedRect(rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802
+        menu = QMenu(self)
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.close)
+        menu.addAction(quit_action)
+        menu.exec(event.globalPos())
