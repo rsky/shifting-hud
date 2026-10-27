@@ -24,6 +24,6 @@
     }
   },
   "required": [
-    "ant"
+    "antID"
   ]
 }
