@@ -149,14 +149,40 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
     return AppSettings(ant_id=int(ant_id_raw), teeth=teeth_settings)
 
 
+def resolve_settings_path(path: Optional[Path] = None) -> Path:
+    """
+    Resolve path to settings.json, supporting both standard Python execution
+    and PyInstaller frozen executables.
+    """
+    if path is not None:
+        return path
+
+    candidates: list[Path] = [Path.cwd() / "settings.json"]
+
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "settings.json")
+        # Support macOS .app bundle (App.app/Contents/MacOS/executable)
+        if exe_dir.name == "MacOS" and exe_dir.parent.name == "Contents":
+            candidates.append(exe_dir.parent.parent.parent / "settings.json")
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass).resolve() / "settings.json")
+    else:
+        candidates.append(Path(__file__).resolve().parent / "settings.json")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[1] if len(candidates) > 1 else candidates[0]
+
+
 def load_settings(path: Optional[Path] = None) -> AppSettings:
     """Load and validate settings.json."""
-    if path is None:
-        cwd_path = Path.cwd() / "settings.json"
-        app_path = Path(__file__).resolve().parent / "settings.json"
-        path = cwd_path if cwd_path.exists() else app_path
+    resolved_path = resolve_settings_path(path)
 
-    with path.open("r", encoding="utf-8") as f:
+    with resolved_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     return validate_and_parse_settings(data)
