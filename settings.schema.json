@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org",
+  "type": "object",
+  "properties": {
+    "antID": {
+      "type": "number"
+    },
+    "teeth": {
+      "type": "object",
+      "properties": {
+        "front": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "rear": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "ant"
+  ]
+}
