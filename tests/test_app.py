@@ -120,6 +120,21 @@ def test_resolve_settings_path_pyinstaller() -> None:
             os.chdir(old_cwd)
 
 
+def test_load_settings_default_when_missing() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir).resolve()
+        missing_file = tmp_path / "settings.json"
+
+        with patch.object(settings_mod, "resolve_settings_path", return_value=missing_file):
+            default_cfg = settings_mod.load_settings()
+            assert default_cfg.ant_id == 0
+            assert default_cfg.teeth is None
+
+        # Explicit path (-s) that does not exist should still raise FileNotFoundError
+        with pytest.raises(FileNotFoundError):
+            settings_mod.load_settings(missing_file)
+
+
 def test_hud_shifting_device_packets() -> None:
     mock_node = MagicMock()
     mock_channel = MagicMock()

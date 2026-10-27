@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
 
 MAX_ANT_ID = 0xFFFF  # 65535 (16-bit unsigned integer)
 
@@ -133,8 +136,15 @@ def resolve_settings_path(path: Optional[Path] = None) -> Path:
 
 
 def load_settings(path: Optional[Path] = None) -> AppSettings:
-    """Load and validate settings.json."""
+    """
+    Load and validate settings.json.
+    If path is not explicitly specified and settings.json does not exist,
+    returns default AppSettings(ant_id=0, teeth=None).
+    """
     resolved_path = resolve_settings_path(path)
+    if path is None and not resolved_path.exists():
+        _logger.info("settings.json not found; using default settings (antID=0)")
+        return AppSettings(ant_id=0, teeth=None)
 
     with resolved_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
