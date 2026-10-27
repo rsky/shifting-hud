@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import sys
@@ -9,11 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from openant.base.driver import DriverException
 from openant.devices import ANTPLUS_NETWORK_KEY
-from openant.devices.common import BatteryData, BatteryStatus, DeviceType
+from openant.devices.common import BatteryData, BatteryStatus
 from openant.devices.shift import ShiftData, Shifting, ShiftingSystemID
-from openant.easy.exception import AntException
 from openant.easy.node import Node
 from PySide6.QtCore import QObject, QPoint, Qt, Signal
 from PySide6.QtGui import (
@@ -42,6 +41,7 @@ _logger = logging.getLogger(__name__)
 
 # ANT+ Shifting Profile (Device Type 0x22 / 34) constants
 SHIFTING_DEVICE_TYPE = 0x22  # 34
+MAX_ANT_ID = 0xFFFF  # 65535 (16-bit unsigned integer)
 INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
 INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
 
@@ -123,8 +123,8 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
         raise ValueError("Missing required property 'antID' in settings.json")
 
     ant_id_raw = raw["antID"]
-    if not _is_valid_number(ant_id_raw) or int(ant_id_raw) != ant_id_raw or ant_id_raw < 0:
-        raise ValueError("'antID' must be a non-negative integer")
+    if not _is_valid_number(ant_id_raw) or int(ant_id_raw) != ant_id_raw or not (0 <= int(ant_id_raw) <= MAX_ANT_ID):
+        raise ValueError(f"'antID' must be an integer between 0 and {MAX_ANT_ID}")
 
     teeth_settings: Optional[TeethSettings] = None
     if "teeth" in raw and raw["teeth"] is not None:
@@ -136,13 +136,17 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
         rear_list: Optional[list[float]] = None
 
         if "front" in teeth_raw and teeth_raw["front"] is not None:
-            if not isinstance(teeth_raw["front"], list) or not all(_is_valid_number(x) for x in teeth_raw["front"]):
-                raise ValueError("'teeth.front' must be an array of numbers")
+            if not isinstance(teeth_raw["front"], list) or not all(
+                _is_valid_number(x) and float(x) > 0 for x in teeth_raw["front"]
+            ):
+                raise ValueError("'teeth.front' must be an array of positive numbers")
             front_list = [float(x) for x in teeth_raw["front"]]
 
         if "rear" in teeth_raw and teeth_raw["rear"] is not None:
-            if not isinstance(teeth_raw["rear"], list) or not all(_is_valid_number(x) for x in teeth_raw["rear"]):
-                raise ValueError("'teeth.rear' must be an array of numbers")
+            if not isinstance(teeth_raw["rear"], list) or not all(
+                _is_valid_number(x) and float(x) > 0 for x in teeth_raw["rear"]
+            ):
+                raise ValueError("'teeth.rear' must be an array of positive numbers")
             rear_list = [float(x) for x in teeth_raw["rear"]]
 
         teeth_settings = TeethSettings(front=front_list, rear=rear_list)
@@ -219,7 +223,6 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         name: str = "shifting",
         trans_type: int = 0,
     ):
-        assert DeviceType.Shifting.value == SHIFTING_DEVICE_TYPE
         super().__init__(
             node=node,
             device_id=device_id,
@@ -278,6 +281,7 @@ class AntShiftingBridge(QObject):
 
     shift_data_received = Signal(object)  # ShiftData
     battery_data_received = Signal(object)  # BatteryData
+    connection_lost = Signal()
 
 
 class AntShiftingWorker:
@@ -291,6 +295,7 @@ class AntShiftingWorker:
         self._node: Optional[Node] = None
         self._device: Optional[HudShiftingDevice] = None
         self._lock = threading.Lock()
+        self._last_error_msg: Optional[str] = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -326,6 +331,7 @@ class AntShiftingWorker:
         while not self._stop_event.is_set():
             node: Optional[Node] = None
             device: Optional[HudShiftingDevice] = None
+            connected = False
             try:
                 node = Node()
                 node.set_network_key(0x00, ANTPLUS_NETWORK_KEY)
@@ -342,13 +348,20 @@ class AntShiftingWorker:
                     self._node = node
                     self._device = device
 
+                self._last_error_msg = None
+                connected = True
                 _logger.info(
                     f"ANT+ Shifting listener started (device_type=0x{SHIFTING_DEVICE_TYPE:02x}, antID={self.ant_id})"
                 )
                 node.start()
-            except (DriverException, AntException, Exception) as e:
+            except Exception as e:
                 if not self._stop_event.is_set():
-                    _logger.warning(f"ANT+ connection unavailable or interrupted ({e}); retrying...")
+                    err_msg = f"{type(e).__name__}: {e}"
+                    if err_msg != self._last_error_msg:
+                        _logger.warning(f"ANT+ connection unavailable or interrupted ({err_msg}); retrying...")
+                        self._last_error_msg = err_msg
+                    else:
+                        _logger.debug(f"ANT+ retry failed ({err_msg}); retrying...")
             finally:
                 with self._lock:
                     self._device = None
@@ -363,17 +376,19 @@ class AntShiftingWorker:
                         node.stop()
                     except Exception:
                         pass
+                if connected and not self._stop_event.is_set():
+                    self.bridge.connection_lost.emit()
 
             if not self._stop_event.is_set():
                 self._stop_event.wait(timeout=3.0)
 
     def _on_device_data(self, page: int, page_name: str, data: ShiftData) -> None:
         if page == 0x01 and isinstance(data, ShiftData):
-            self.bridge.shift_data_received.emit(data)
+            self.bridge.shift_data_received.emit(dataclasses.replace(data))
 
     def _on_battery(self, data: BatteryData) -> None:
         if isinstance(data, BatteryData):
-            self.bridge.battery_data_received.emit(data)
+            self.bridge.battery_data_received.emit(dataclasses.replace(data))
 
 
 class ShiftingHudWindow(QWidget):
@@ -494,6 +509,17 @@ class ShiftingHudWindow(QWidget):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(self.close)
 
+    def reset_display(self) -> None:
+        """Reset all HUD metrics to '-' when connection is lost."""
+        self.front_value_label.setText("-")
+        self.rear_value_label.setText("-")
+        self.ratio_value_label.setText("-")
+        self.ratio_block.setVisible(False)
+        for label in self.battery_value_labels.values():
+            label.setText("-")
+        self.adjustSize()
+        self.update()
+
     def update_shift_data(self, data: ShiftData) -> None:
         """Update FRONT, REAR, and optional GEAR RATIO from ShiftData."""
         front_text, valid_front = format_gear_text(data.gear_front, data.total_front, INVALID_GEAR_FRONT)
@@ -587,7 +613,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    settings = load_settings(args.settings)
+    try:
+        settings = load_settings(args.settings)
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        _logger.error(f"Failed to load settings: {e}")
+        return 1
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = ShiftingHudWindow(settings)
@@ -595,6 +625,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     bridge = AntShiftingBridge()
     bridge.shift_data_received.connect(window.update_shift_data)
     bridge.battery_data_received.connect(window.update_battery_data)
+    bridge.connection_lost.connect(window.reset_display)
 
     worker = AntShiftingWorker(ant_id=settings.ant_id, bridge=bridge)
     app.aboutToQuit.connect(worker.stop)
