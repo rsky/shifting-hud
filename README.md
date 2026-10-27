@@ -26,17 +26,41 @@ ______________________________________________________________________
 
 ## セットアップ
 
-Python 仮想環境（`.venv`）を使用します。また、受信には ANT+ 対応 USB ドングル（ANTUSB2 / ANTUSB-m 等）が必要です。
+受信には ANT+ 対応 USB ドングル（ANTUSB2 / ANTUSB-m 等）が必要です。
+また、Python 仮想環境（[venv](https://docs.python.org/ja/dev/library/venv.html)）の利用を推奨します。
 
-```zsh
-python3 -m venv .venv
-.venv/bin/pip install PySide6 openant
+### 1. 仮想環境の作成と有効化
+
+```bash
+# 仮想環境の作成
+python -m venv .venv
+
+# 仮想環境の有効化
+# POSIX (bash/zsh):
+source .venv/bin/activate
+
+# Windows (cmd.exe):
+.\.venv\Scripts\activate.bat
+
+# Windows (PowerShell):
+.\.venv\Scripts\Activate.ps1
+```
+
+> [!NOTE]
+> 仮想環境の詳細や各シェルでの有効化コマンドについては、Python 公式ドキュメントの [venv --- 仮想環境の作成](https://docs.python.org/ja/dev/library/venv.html) を参照してください。
+
+### 2. 依存パッケージのインストール
+
+仮想環境を有効化した状態で、以下のコマンドを実行します：
+
+```bash
+pip install PySide6 openant
 ```
 
 開発ツール（`ruff`, `mypy`, `pytest`）もあわせて導入する場合：
 
-```zsh
-.venv/bin/pip install ruff mypy pytest
+```bash
+pip install ruff mypy pytest
 ```
 
 ______________________________________________________________________
@@ -96,8 +120,8 @@ ______________________________________________________________________
 
 ### 起動
 
-```zsh
-.venv/bin/python main.py
+```bash
+python main.py
 ```
 
 オプション：
@@ -110,12 +134,12 @@ ______________________________________________________________________
 
 ANT+ デバイス未接続の状態で、現在の設定に応じたダミーデータをもとに角丸半透明の PNG 画像を直接生成・保存できます：
 
-```zsh
+```bash
 # デフォルトで ./screenshot.png に保存
-.venv/bin/python capture.py
+python capture.py
 
 # 出力先を指定する場合
-.venv/bin/python capture.py -o screenshot.png
+python capture.py -o screenshot.png
 ```
 
 ### HUD ウィンドウの操作
@@ -133,34 +157,34 @@ ______________________________________________________________________
 
 ### 1. リント・フォーマット（Ruff）
 
-```zsh
+```bash
 # リントチェック
-.venv/bin/ruff check .
+ruff check .
 
 # 自動修正付きリントチェック
-.venv/bin/ruff check --fix .
+ruff check --fix .
 
 # コードフォーマットの適用
-.venv/bin/ruff format .
+ruff format .
 
 # フォーマット差分の確認（CI / コミット前確認用）
-.venv/bin/ruff format --check .
+ruff format --check .
 ```
 
 ### 2. 静的型チェック（Mypy）
 
 `strict = true` モードで型検査を実行します：
 
-```zsh
-.venv/bin/mypy .
+```bash
+mypy .
 ```
 
 ### 3. 単体テスト（Pytest）
 
 設定バリデーション、ギア比計算、ANT+ パケットデコード、ウォッチドッグ、HUD 描画の単体テストを実行します：
 
-```zsh
-.venv/bin/pytest
+```bash
+pytest
 ```
 
 ______________________________________________________________________
