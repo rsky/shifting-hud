@@ -15,7 +15,9 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 import ant_worker
+import capture
 import hud_window
+import main as main_mod
 import settings as settings_mod
 
 
@@ -267,3 +269,50 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
     assert 0 < image.pixelColor(10, 10).alpha() < 255
 
     win.close()
+
+
+def test_demo_mode_and_apply_demo_data(qapp: QApplication) -> None:
+    # 2x setup
+    cfg_2x = settings_mod.validate_and_parse_settings(
+        {"antID": 0, "teeth": {"front": [50, 34], "rear": [11, 12, 13, 14, 15, 17, 19, 21, 24, 27, 30, 34]}}
+    )
+    win_2x = hud_window.ShiftingHudWindow(cfg_2x)
+    main_mod.apply_demo_data(win_2x)
+    win_2x.show()
+    qapp.processEvents()
+    assert win_2x.front_block.isVisible()
+    assert win_2x.front_value_label.text() == "2/2"
+    assert win_2x.rear_value_label.text() == "5/12"
+    assert win_2x.ratio_block.isVisible()
+    assert win_2x.battery_value_labels["L"].text() == "Good"
+    assert win_2x.battery_value_labels["FD"].text() == "New"
+    win_2x.close()
+
+    # 1x setup
+    cfg_1x = settings_mod.validate_and_parse_settings({"antID": 0, "teeth": {"front": [46], "rear": [11, 34]}})
+    win_1x = hud_window.ShiftingHudWindow(cfg_1x)
+    main_mod.apply_demo_data(win_1x)
+    win_1x.show()
+    qapp.processEvents()
+    assert not win_1x.front_block.isVisible()
+    assert win_1x.rear_value_label.text() == "2/2"
+    assert win_1x.ratio_block.isVisible()
+    assert win_1x.battery_value_labels["FD"].text() == "-"
+    win_1x.close()
+
+
+def test_capture_execution(tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"antID": 100, "teeth": {"front": [50, 34], "rear": [11, 34]}}', encoding="utf-8")
+    output_png = tmp_path / "out" / "sample.png"
+
+    ret = capture.main(["-s", str(settings_file), "-o", str(output_png)])
+    assert ret == 0
+    assert output_png.exists()
+    assert output_png.stat().st_size > 0
+
+
+def test_main_demo_flag(qapp: QApplication) -> None:
+    with patch.object(QApplication, "exec", return_value=0):
+        ret = main_mod.main(["--demo"])
+        assert ret == 0

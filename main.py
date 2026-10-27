@@ -7,10 +7,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from openant.devices.common import BatteryData, BatteryStatus
+from openant.devices.shift import ShiftData, ShiftingSystemID
 from PySide6.QtWidgets import QApplication
 
 from ant_worker import AntShiftingWorker
-from hud_window import AntShiftingBridge, ShiftingHudWindow
+from hud_window import INVALID_GEAR_FRONT, AntShiftingBridge, ShiftingHudWindow
 from settings import load_settings
 
 _logger = logging.getLogger(__name__)
@@ -30,7 +32,44 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run in demo mode with sample shift & battery data (no ANT+ hardware required)",
+    )
     return parser.parse_args(argv)
+
+
+def apply_demo_data(window: ShiftingHudWindow) -> None:
+    """Inject sample shift and battery telemetry into the HUD window."""
+    teeth = window.settings.teeth
+    is_front_single = teeth is not None and teeth.front is not None and len(teeth.front) == 1
+
+    total_rear = len(teeth.rear) if (teeth and teeth.rear) else 12
+    gear_rear = min(5, total_rear)
+
+    if is_front_single:
+        gear_front = INVALID_GEAR_FRONT
+        total_front = 0
+    else:
+        total_front = len(teeth.front) if (teeth and teeth.front) else 2
+        gear_front = 2
+
+    window.update_shift_data(
+        ShiftData(
+            gear_front=gear_front,
+            total_front=total_front,
+            gear_rear=gear_rear,
+            total_rear=total_rear,
+        )
+    )
+    window.update_battery_data(BatteryData(battery_id=ShiftingSystemID.LeftShifter.value, status=BatteryStatus.Good))
+    window.update_battery_data(BatteryData(battery_id=ShiftingSystemID.RightShifter.value, status=BatteryStatus.Good))
+    if not is_front_single:
+        window.update_battery_data(
+            BatteryData(battery_id=ShiftingSystemID.FrontDerailleur.value, status=BatteryStatus.New)
+        )
+    window.update_battery_data(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.Ok))
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -48,6 +87,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = ShiftingHudWindow(settings)
+
+    if args.demo:
+        apply_demo_data(window)
+        window.show()
+        return app.exec()
 
     bridge = AntShiftingBridge()
     bridge.shift_data_received.connect(window.update_shift_data)
