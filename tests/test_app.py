@@ -173,17 +173,21 @@ def test_worker_inactivity_watchdog() -> None:
     )
     mock_device = MagicMock()
     mock_device.last_rx_time = 100.0
+    mock_node = MagicMock()
     worker._device = mock_device
+    worker._node = mock_node
 
     # Before timeout (elapsed 5s < 10s)
     assert not worker.check_inactivity(now=105.0)
     assert lost_count == 0
     assert mock_device.last_rx_time == 100.0
+    assert mock_node.stop.call_count == 0
 
     # At/after timeout (elapsed 10s >= 10s)
     assert worker.check_inactivity(now=110.0)
     assert lost_count == 1
     assert mock_device.last_rx_time is None
+    assert mock_node.stop.call_count == 1
 
     # Subsequent check without new packet does not re-trigger
     assert not worker.check_inactivity(now=120.0)

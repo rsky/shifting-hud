@@ -3,7 +3,9 @@
   "type": "object",
   "properties": {
     "antID": {
-      "type": "number"
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
     },
     "teeth": {
       "type": "object",
@@ -11,13 +13,15 @@
         "front": {
           "type": "array",
           "items": {
-            "type": "number"
+            "type": "number",
+            "exclusiveMinimum": 0
           }
         },
         "rear": {
           "type": "array",
           "items": {
-            "type": "number"
+            "type": "number",
+            "exclusiveMinimum": 0
           }
         }
       }

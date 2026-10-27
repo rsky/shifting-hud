@@ -152,6 +152,7 @@ class AntShiftingWorker:
 
         with self._lock:
             device = self._device
+            node = self._node
 
         if device is None or device.last_rx_time is None:
             return False
@@ -159,9 +160,14 @@ class AntShiftingWorker:
         current_time = time.monotonic() if now is None else now
         if current_time - device.last_rx_time >= self._inactivity_timeout:
             device.last_rx_time = None
-            _logger.info("ANT+ Shifting sensor inactivity timeout; resetting HUD display")
+            _logger.info("ANT+ Shifting sensor inactivity timeout; resetting HUD display and reconnecting")
             if self._on_connection_lost is not None:
                 self._on_connection_lost()
+            if node is not None:
+                try:
+                    node.stop()
+                except Exception as e:
+                    _logger.debug(f"Error stopping node on inactivity: {e}")
             return True
         return False
 

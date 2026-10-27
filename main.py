@@ -64,8 +64,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     window.show()
     worker.start()
-
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        worker.stop()
 
 
 if __name__ == "__main__":
