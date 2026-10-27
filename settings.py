@@ -35,15 +35,16 @@ class AppSettings:
         innermost (lightest) gear:
         - teeth.front is sorted ascending (inner/small -> outer/large)
         - teeth.rear is sorted descending (inner/large -> outer/small)
+        - When gear_front is None (no front derailleur / 1x setup), teeth.front[0] is used.
 
-        Returns None if teeth are not configured, gears are invalid, or IndexError occurs.
+        Returns None if teeth are not configured, rear gear is invalid, or IndexError occurs.
         """
         if self.teeth is None or not self.teeth.front or not self.teeth.rear:
             return None
-        if gear_front is None or gear_rear is None:
+        if gear_rear is None:
             return None
 
-        front_index = gear_front - 1
+        front_index = 0 if gear_front is None else gear_front - 1
         rear_index = gear_rear - 1
 
         try:

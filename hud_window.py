@@ -59,7 +59,7 @@ def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Op
 
 
 def format_battery_status(status: BatteryStatus) -> str:
-    """Format BatteryStatus enum to display string or '-'."""
+    """Format BatteryStatus enum to display a string or '-'."""
     if status in VALID_BATTERY_STATUSES:
         return str(status.name)
     return "-"
@@ -188,10 +188,11 @@ class ShiftingHudWindow(QWidget):
             shortcut.activated.connect(self.close)
 
     def reset_display(self) -> None:
-        """Reset all HUD metrics to '-' when connection is lost."""
+        """Reset all HUD metrics to '-' when the connection is lost."""
         changed = False
-        if self.front_value_label.text() != "-":
+        if self.front_value_label.text() != "-" or self.front_block.isHidden():
             self.front_value_label.setText("-")
+            self.front_block.setVisible(True)
             changed = True
         if self.rear_value_label.text() != "-":
             self.rear_value_label.setText("-")
@@ -213,6 +214,9 @@ class ShiftingHudWindow(QWidget):
         front_text, valid_front = format_gear_text(data.gear_front, data.total_front, INVALID_GEAR_FRONT)
         rear_text, valid_rear = format_gear_text(data.gear_rear, data.total_rear, INVALID_GEAR_REAR)
 
+        # Hide FRONT block when FD is absent (1x setup: front unknown while rear is valid)
+        front_visible = not (valid_front is None and valid_rear is not None)
+
         ratio = self.settings.calculate_gear_ratio(valid_front, valid_rear)
         ratio_visible = ratio is not None
         ratio_text = f"{ratio:.2f}" if ratio is not None else "-"
@@ -220,6 +224,9 @@ class ShiftingHudWindow(QWidget):
         changed = False
         if self.front_value_label.text() != front_text:
             self.front_value_label.setText(front_text)
+            changed = True
+        if self.front_block.isHidden() == front_visible:
+            self.front_block.setVisible(front_visible)
             changed = True
         if self.rear_value_label.text() != rear_text:
             self.rear_value_label.setText(rear_text)

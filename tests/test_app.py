@@ -52,8 +52,12 @@ def test_settings_sorting_and_ratio() -> None:
     assert cfg.calculate_gear_ratio(1, 13) is None
     assert cfg.calculate_gear_ratio(0, 1) is None
     assert cfg.calculate_gear_ratio(1, 0) is None
-    assert cfg.calculate_gear_ratio(None, 1) is None
     assert cfg.calculate_gear_ratio(1, None) is None
+    assert cfg.calculate_gear_ratio(None, None) is None
+
+    # When gear_front is None (FD absent / 1x), teeth.front[0] (34.0) is used
+    assert cfg.calculate_gear_ratio(None, 1) == pytest.approx(1.0)
+    assert cfg.calculate_gear_ratio(None, 12) == pytest.approx(34.0 / 11.0)
 
 
 def test_settings_front_single_and_no_teeth() -> None:
@@ -216,6 +220,7 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
 
     win.update_shift_data(ShiftData(gear_front=2, total_front=2, gear_rear=12, total_rear=12))
     qapp.processEvents()
+    assert win.front_block.isVisible()
     assert win.front_value_label.text() == "2/2"
     assert win.rear_value_label.text() == "12/12"
     assert win.ratio_block.isVisible()
@@ -225,6 +230,24 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
     with patch.object(win, "adjustSize") as mock_adjust:
         win.update_shift_data(ShiftData(gear_front=2, total_front=2, gear_rear=12, total_rear=12))
         assert mock_adjust.call_count == 0
+
+    # 1x setup without FD (gear_front=7 invalid, gear_rear=12 valid):
+    # FRONT block hidden, RATIO calculated with teeth.front[0] (34 / 11 = 3.09)
+    win.update_shift_data(ShiftData(gear_front=7, total_front=0, gear_rear=12, total_rear=12))
+    qapp.processEvents()
+    assert not win.front_block.isVisible()
+    assert win.rear_value_label.text() == "12/12"
+    assert win.ratio_block.isVisible()
+    assert win.ratio_value_label.text() == "3.09"
+
+    # Both front and rear invalid (e.g. gear_front=7, gear_rear=31):
+    # FRONT block visible showing "-", REAR showing "-", RATIO hidden
+    win.update_shift_data(ShiftData(gear_front=7, total_front=0, gear_rear=31, total_rear=0))
+    qapp.processEvents()
+    assert win.front_block.isVisible()
+    assert win.front_value_label.text() == "-"
+    assert win.rear_value_label.text() == "-"
+    assert not win.ratio_block.isVisible()
 
     win.update_battery_data(BatteryData(battery_id=ShiftingSystemID.LeftShifter.value, status=BatteryStatus.New))
     qapp.processEvents()
