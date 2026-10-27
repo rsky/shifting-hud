@@ -2,6 +2,10 @@
 name = "shifting-hud"
 version = "0.1.0"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Ryusuke SEKIYAMA", email = "rsky0711@gamil.com" },
+]
 dependencies = [
     "PySide6>=6.0.0",
     "openant>=1.3.0",
