@@ -216,7 +216,7 @@ ______________________________________________________________________
 
 本プロジェクトは [MIT License](LICENSE) の下で公開されています。
 
-Copyright (c) Ryusuke SEKIYAMA \<rsky0711@gamil.com>
+Copyright (c) Ryusuke SEKIYAMA \<rsky0711@gmail.com>
 
 ### サードパーティ製アセットのライセンス
 
