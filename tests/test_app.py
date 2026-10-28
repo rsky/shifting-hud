@@ -229,11 +229,11 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
     win.show()
     qapp.processEvents()
 
-    assert win.front_value_label.text() == "-"
-    assert win.rear_value_label.text() == "-"
+    assert win.front_value_label.text() == "--"
+    assert win.rear_value_label.text() == "--"
     assert not win.ratio_block.isVisible()
     for key in ("L", "R", "FD", "RD"):
-        assert win.battery_value_labels[key].text() == "-"
+        assert win.battery_value_labels[key].text() == "--"
 
     win.update_shift_data(ShiftData(gear_front=2, total_front=2, gear_rear=12, total_rear=12))
     qapp.processEvents()
@@ -258,12 +258,12 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
     assert win.ratio_value_label.text() == "3.09"
 
     # Both front and rear invalid (e.g. gear_front=7, gear_rear=31):
-    # FRONT block visible showing "-", REAR showing "-", RATIO hidden
+    # FRONT block visible showing "--", REAR showing "--", RATIO hidden
     win.update_shift_data(ShiftData(gear_front=7, total_front=0, gear_rear=31, total_rear=0))
     qapp.processEvents()
     assert win.front_block.isVisible()
-    assert win.front_value_label.text() == "-"
-    assert win.rear_value_label.text() == "-"
+    assert win.front_value_label.text() == "--"
+    assert win.rear_value_label.text() == "--"
     assert not win.ratio_block.isVisible()
 
     win.update_battery_data(BatteryData(battery_id=ShiftingSystemID.LeftShifter.value, status=BatteryStatus.New))
@@ -272,10 +272,10 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
 
     win.reset_display()
     qapp.processEvents()
-    assert win.front_value_label.text() == "-"
-    assert win.rear_value_label.text() == "-"
+    assert win.front_value_label.text() == "--"
+    assert win.rear_value_label.text() == "--"
     assert not win.ratio_block.isVisible()
-    assert win.battery_value_labels["L"].text() == "-"
+    assert win.battery_value_labels["L"].text() == "--"
 
     image = QImage(win.size(), QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(0)
@@ -312,7 +312,7 @@ def test_demo_mode_and_apply_demo_data(qapp: QApplication) -> None:
     assert not win_1x.front_block.isVisible()
     assert win_1x.rear_value_label.text() == "2/2"
     assert win_1x.ratio_block.isVisible()
-    assert win_1x.battery_value_labels["FD"].text() == "-"
+    assert win_1x.battery_value_labels["FD"].text() == "--"
     win_1x.close()
 
 

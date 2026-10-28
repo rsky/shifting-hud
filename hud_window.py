@@ -47,6 +47,8 @@ BATTERY_COMPONENT_KEYS = {
     ShiftingSystemID.RearDerailleur: "RD",
 }
 
+INITIAL_VALUE = "--"
+
 
 def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Optional[int]]:
     """
@@ -55,14 +57,14 @@ def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Op
     """
     if 1 <= gear < invalid_value and 1 <= total < invalid_value and gear <= total:
         return f"{gear}/{total}", gear
-    return "-", None
+    return INITIAL_VALUE, None
 
 
 def format_battery_status(status: BatteryStatus) -> str:
     """Format BatteryStatus enum to display a string or '-'."""
     if status in VALID_BATTERY_STATUSES:
         return str(status.name)
-    return "-"
+    return INITIAL_VALUE
 
 
 class AntShiftingBridge(QObject):
@@ -79,15 +81,38 @@ class ShiftingHudWindow(QWidget):
     """
 
     CORNER_RADIUS = 16
-    BG_COLOR = QColor(18, 20, 26, 185)
+    BG_COLOR = QColor(18, 20, 26, 88)
     BORDER_COLOR = QColor(255, 255, 255, 45)
 
     MAIN_TITLE_STYLE = (
-        "color: rgba(185, 195, 210, 255);font-size: 11px;font-weight: 700;letter-spacing: 1px;background: transparent;"
+        "color: rgba(185, 195, 210, 255);"
+        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        "font-size: 14px;"
+        "font-weight: 700;"
+        "letter-spacing: 1px;"
+        "background: transparent;"
     )
-    MAIN_VALUE_STYLE = "color: rgba(255, 255, 255, 255);font-size: 28px;font-weight: 800;background: transparent;"
-    SUB_TITLE_STYLE = "color: rgba(170, 180, 195, 255);font-size: 11px;font-weight: 700;background: transparent;"
-    SUB_VALUE_STYLE = "color: rgba(255, 255, 255, 255);font-size: 11px;font-weight: 600;background: transparent;"
+    MAIN_VALUE_STYLE = (
+        "color: rgba(255, 255, 255, 255);"
+        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        "font-size: 32px;"
+        "font-weight: 900;"
+        "background: transparent;"
+    )
+    SUB_TITLE_STYLE = (
+        "color: rgba(170, 180, 195, 255);"
+        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        "font-size: 14px;"
+        "font-weight: 700;"
+        "background: transparent;"
+    )
+    SUB_VALUE_STYLE = (
+        "color: rgba(255, 255, 255, 255);"
+        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        "font-size: 14px;"
+        "font-weight: 700;"
+        "background: transparent;"
+    )
     DIVIDER_STYLE = "background-color: rgba(255, 255, 255, 40); border: none;"
 
     def __init__(self, settings: AppSettings, parent: Optional[QWidget] = None):
@@ -113,9 +138,9 @@ class ShiftingHudWindow(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(24)
 
-        self.front_block, self.front_value_label = self._create_main_metric_block("FRONT", "-")
-        self.rear_block, self.rear_value_label = self._create_main_metric_block("REAR", "-")
-        self.ratio_block, self.ratio_value_label = self._create_main_metric_block("RATIO", "-")
+        self.front_block, self.front_value_label = self._create_main_metric_block("FRONT", INITIAL_VALUE)
+        self.rear_block, self.rear_value_label = self._create_main_metric_block("REAR", INITIAL_VALUE)
+        self.ratio_block, self.ratio_value_label = self._create_main_metric_block("RATIO", INITIAL_VALUE)
         self.ratio_block.setVisible(False)
 
         main_layout.addWidget(self.front_block)
@@ -135,7 +160,7 @@ class ShiftingHudWindow(QWidget):
 
         self.battery_value_labels: dict[str, QLabel] = {}
         for key in ("L", "R", "FD", "RD"):
-            block, val_label = self._create_sub_metric_block(key, "-")
+            block, val_label = self._create_sub_metric_block(key, INITIAL_VALUE)
             self.battery_value_labels[key] = val_label
             sub_layout.addWidget(block)
 
@@ -156,7 +181,7 @@ class ShiftingHudWindow(QWidget):
 
         value_label = QLabel(initial_value, container)
         value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        value_label.setMinimumWidth(68)
+        value_label.setMinimumWidth(104)
         value_label.setStyleSheet(self.MAIN_VALUE_STYLE)
 
         layout.addWidget(title_label)
@@ -175,7 +200,7 @@ class ShiftingHudWindow(QWidget):
 
         value_label = QLabel(initial_value, container)
         value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        value_label.setMinimumWidth(28)
+        value_label.setMinimumWidth(48)
         value_label.setStyleSheet(self.SUB_VALUE_STYLE)
 
         layout.addWidget(title_label)
@@ -190,20 +215,20 @@ class ShiftingHudWindow(QWidget):
     def reset_display(self) -> None:
         """Reset all HUD metrics to '-' when the connection is lost."""
         changed = False
-        if self.front_value_label.text() != "-" or self.front_block.isHidden():
-            self.front_value_label.setText("-")
+        if self.front_value_label.text() != INITIAL_VALUE or self.front_block.isHidden():
+            self.front_value_label.setText(INITIAL_VALUE)
             self.front_block.setVisible(True)
             changed = True
-        if self.rear_value_label.text() != "-":
-            self.rear_value_label.setText("-")
+        if self.rear_value_label.text() != INITIAL_VALUE:
+            self.rear_value_label.setText(INITIAL_VALUE)
             changed = True
-        if self.ratio_value_label.text() != "-" or not self.ratio_block.isHidden():
-            self.ratio_value_label.setText("-")
+        if self.ratio_value_label.text() != INITIAL_VALUE or not self.ratio_block.isHidden():
+            self.ratio_value_label.setText(INITIAL_VALUE)
             self.ratio_block.setVisible(False)
             changed = True
         for label in self.battery_value_labels.values():
-            if label.text() != "-":
-                label.setText("-")
+            if label.text() != INITIAL_VALUE:
+                label.setText(INITIAL_VALUE)
                 changed = True
         if changed:
             self.adjustSize()
@@ -219,7 +244,7 @@ class ShiftingHudWindow(QWidget):
 
         ratio = self.settings.calculate_gear_ratio(valid_front, valid_rear)
         ratio_visible = ratio is not None
-        ratio_text = f"{ratio:.2f}" if ratio is not None else "-"
+        ratio_text = f"{ratio:.2f}" if ratio is not None else INITIAL_VALUE
 
         changed = False
         if self.front_value_label.text() != front_text:
