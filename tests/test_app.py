@@ -268,13 +268,15 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
 
     win.update_battery_data(BatteryData(battery_id=ShiftingSystemID.LeftShifter.value, status=BatteryStatus.New))
     qapp.processEvents()
-    assert win.battery_value_labels["L"].text() == "New"
+    assert win.battery_statuses["L"] == BatteryStatus.New
+    assert not win.battery_value_labels["L"].pixmap().isNull()
 
     win.reset_display()
     qapp.processEvents()
     assert win.front_value_label.text() == "--"
     assert win.rear_value_label.text() == "--"
     assert not win.ratio_block.isVisible()
+    assert win.battery_statuses["L"] is None
     assert win.battery_value_labels["L"].text() == "--"
 
     image = QImage(win.size(), QImage.Format.Format_ARGB32_Premultiplied)
@@ -299,8 +301,10 @@ def test_demo_mode_and_apply_demo_data(qapp: QApplication) -> None:
     assert win_2x.front_value_label.text() == "2/2"
     assert win_2x.rear_value_label.text() == "5/12"
     assert win_2x.ratio_block.isVisible()
-    assert win_2x.battery_value_labels["L"].text() == "Good"
-    assert win_2x.battery_value_labels["FD"].text() == "New"
+    assert win_2x.battery_statuses["L"] == BatteryStatus.Good
+    assert not win_2x.battery_value_labels["L"].pixmap().isNull()
+    assert win_2x.battery_statuses["FD"] == BatteryStatus.New
+    assert not win_2x.battery_value_labels["FD"].pixmap().isNull()
     win_2x.close()
 
     # 1x setup
@@ -312,8 +316,58 @@ def test_demo_mode_and_apply_demo_data(qapp: QApplication) -> None:
     assert not win_1x.front_block.isVisible()
     assert win_1x.rear_value_label.text() == "2/2"
     assert win_1x.ratio_block.isVisible()
+    assert win_1x.battery_statuses["FD"] is None
     assert win_1x.battery_value_labels["FD"].text() == "--"
     win_1x.close()
+
+
+def test_battery_icon_mapping(qapp: QApplication) -> None:
+    cfg = settings_mod.validate_and_parse_settings({"antID": 0})
+    win = hud_window.ShiftingHudWindow(cfg)
+    win.show()
+    qapp.processEvents()
+
+    # Initial state
+    assert win.battery_statuses["RD"] is None
+    assert win.battery_value_labels["RD"].text() == "--"
+
+    # New and Good share the same cached QPixmap instance; the 5 icon files produce distinct pixmaps
+    assert win._battery_icons[BatteryStatus.New].cacheKey() == win._battery_icons[BatteryStatus.Good].cacheKey()
+    distinct_statuses = (
+        BatteryStatus.New,
+        BatteryStatus.Ok,
+        BatteryStatus.Low,
+        BatteryStatus.Critical,
+        BatteryStatus.Charging,
+    )
+    assert len({win._battery_icons[s].cacheKey() for s in distinct_statuses}) == len(distinct_statuses)
+
+    # Statuses mapped to icons
+    for status in hud_window.BATTERY_ICON_FILES:
+        win.update_battery_data(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=status))
+        qapp.processEvents()
+        assert win.battery_statuses["RD"] == status
+        pix = win.battery_value_labels["RD"].pixmap()
+        assert not pix.isNull()
+        assert pix.size() == hud_window.BATTERY_ICON_SIZE
+        assert pix.cacheKey() == win._battery_icons[status].cacheKey()
+
+    # Differential update: repeating identical BatteryData should not trigger adjustSize()
+    with patch.object(win, "adjustSize") as mock_adjust:
+        win.update_battery_data(
+            BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.Charging)
+        )
+        assert mock_adjust.call_count == 0
+
+    # Unknown and Invalid fall back to text "--"
+    for status in (BatteryStatus.Unknown, BatteryStatus.Invalid):
+        win.update_battery_data(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=status))
+        qapp.processEvents()
+        assert win.battery_statuses["RD"] == status
+        assert win.battery_value_labels["RD"].text() == "--"
+        assert win.battery_value_labels["RD"].pixmap().isNull()
+
+    win.close()
 
 
 def test_capture_execution(tmp_path: Path) -> None:

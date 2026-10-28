@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from openant.devices.common import BatteryData, BatteryStatus
 from openant.devices.shift import ShiftData, ShiftingSystemID
-from PySide6.QtCore import QObject, QPoint, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
     QContextMenuEvent,
+    QImage,
     QKeySequence,
     QMouseEvent,
     QPainter,
     QPaintEvent,
     QPen,
+    QPixmap,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -31,15 +34,6 @@ from settings import AppSettings
 INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
 INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
 
-VALID_BATTERY_STATUSES = {
-    BatteryStatus.New,
-    BatteryStatus.Good,
-    BatteryStatus.Ok,
-    BatteryStatus.Low,
-    BatteryStatus.Critical,
-    BatteryStatus.Charging,
-}
-
 BATTERY_COMPONENT_KEYS = {
     ShiftingSystemID.LeftShifter: "L",
     ShiftingSystemID.RightShifter: "R",
@@ -49,22 +43,48 @@ BATTERY_COMPONENT_KEYS = {
 
 INITIAL_VALUE = "--"
 
+ICONS_DIR = Path(__file__).resolve().parent / "icons"
+BATTERY_ICON_CROP_RECT = QRect(0, 8, 48, 32)
+BATTERY_ICON_SIZE = QSize(24, 16)
+
+BATTERY_ICON_FILES: dict[BatteryStatus, str] = {
+    BatteryStatus.New: "akar-icons--battery-full.png",
+    BatteryStatus.Good: "akar-icons--battery-full.png",
+    BatteryStatus.Ok: "akar-icons--battery-medium.png",
+    BatteryStatus.Low: "akar-icons--battery-low.png",
+    BatteryStatus.Critical: "akar-icons--battery-empty.png",
+    BatteryStatus.Charging: "akar-icons--battery-charging.png",
+}
+
+
+def load_battery_icons(icons_dir: Path = ICONS_DIR) -> dict[BatteryStatus, QPixmap]:
+    """Load, crop (48x48 -> 48x32), and scale to 24x16 QPixmap for battery statuses."""
+    pixmap_cache: dict[str, QPixmap] = {}
+    icons: dict[BatteryStatus, QPixmap] = {}
+    for status, filename in BATTERY_ICON_FILES.items():
+        if filename not in pixmap_cache:
+            img = QImage(str(icons_dir / filename))
+            if not img.isNull():
+                cropped = img.copy(BATTERY_ICON_CROP_RECT)
+                scaled = cropped.scaled(
+                    BATTERY_ICON_SIZE,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                pixmap_cache[filename] = QPixmap.fromImage(scaled)
+        if filename in pixmap_cache:
+            icons[status] = pixmap_cache[filename]
+    return icons
+
 
 def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Optional[int]]:
     """
-    Format gear text as '<current>/<total>' or '-' when unknown/invalid.
+    Format gear text as '<current>/<total>' or '--' when unknown/invalid.
     Returns (formatted_text, valid_current_gear_or_None).
     """
     if 1 <= gear < invalid_value and 1 <= total < invalid_value and gear <= total:
         return f"{gear}/{total}", gear
     return INITIAL_VALUE, None
-
-
-def format_battery_status(status: BatteryStatus) -> str:
-    """Format BatteryStatus enum to display a string or '-'."""
-    if status in VALID_BATTERY_STATUSES:
-        return str(status.name)
-    return INITIAL_VALUE
 
 
 class AntShiftingBridge(QObject):
@@ -81,12 +101,17 @@ class ShiftingHudWindow(QWidget):
     """
 
     CORNER_RADIUS = 16
+    MAIN_VALUE_MIN_WIDTH = 104
+    SUB_VALUE_MIN_WIDTH = BATTERY_ICON_SIZE.width()
+
     BG_COLOR = QColor(18, 20, 26, 88)
     BORDER_COLOR = QColor(255, 255, 255, 45)
 
+    FONT_FAMILY = '"Avenir Next", "Segoe UI", sans-serif'
+
     MAIN_TITLE_STYLE = (
         "color: rgba(185, 195, 210, 255);"
-        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        f"font-family: {FONT_FAMILY};"
         "font-size: 14px;"
         "font-weight: 700;"
         "letter-spacing: 1px;"
@@ -94,21 +119,21 @@ class ShiftingHudWindow(QWidget):
     )
     MAIN_VALUE_STYLE = (
         "color: rgba(255, 255, 255, 255);"
-        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        f"font-family: {FONT_FAMILY};"
         "font-size: 32px;"
         "font-weight: 900;"
         "background: transparent;"
     )
     SUB_TITLE_STYLE = (
         "color: rgba(170, 180, 195, 255);"
-        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        f"font-family: {FONT_FAMILY};"
         "font-size: 14px;"
         "font-weight: 700;"
         "background: transparent;"
     )
     SUB_VALUE_STYLE = (
         "color: rgba(255, 255, 255, 255);"
-        'font-family: "Avenir Next", "Segoe UI", sans-serif;'
+        f"font-family: {FONT_FAMILY};"
         "font-size: 14px;"
         "font-weight: 700;"
         "background: transparent;"
@@ -119,6 +144,10 @@ class ShiftingHudWindow(QWidget):
         super().__init__(parent)
         self.settings = settings
         self._drag_offset: Optional[QPoint] = None
+        self._battery_icons = load_battery_icons()
+        self.battery_statuses: dict[str, Optional[BatteryStatus]] = {
+            key: None for key in BATTERY_COMPONENT_KEYS.values()
+        }
 
         self.setWindowTitle("Shifting HUD")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
@@ -159,7 +188,7 @@ class ShiftingHudWindow(QWidget):
         sub_layout.setSpacing(16)
 
         self.battery_value_labels: dict[str, QLabel] = {}
-        for key in ("L", "R", "FD", "RD"):
+        for key in BATTERY_COMPONENT_KEYS.values():
             block, val_label = self._create_sub_metric_block(key, INITIAL_VALUE)
             self.battery_value_labels[key] = val_label
             sub_layout.addWidget(block)
@@ -181,7 +210,7 @@ class ShiftingHudWindow(QWidget):
 
         value_label = QLabel(initial_value, container)
         value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        value_label.setMinimumWidth(104)
+        value_label.setMinimumWidth(self.MAIN_VALUE_MIN_WIDTH)
         value_label.setStyleSheet(self.MAIN_VALUE_STYLE)
 
         layout.addWidget(title_label)
@@ -200,12 +229,20 @@ class ShiftingHudWindow(QWidget):
 
         value_label = QLabel(initial_value, container)
         value_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        value_label.setMinimumWidth(48)
+        value_label.setMinimumWidth(self.SUB_VALUE_MIN_WIDTH)
         value_label.setStyleSheet(self.SUB_VALUE_STYLE)
 
         layout.addWidget(title_label)
         layout.addWidget(value_label)
         return container, value_label
+
+    def _set_battery_label(self, component_key: str, status: Optional[BatteryStatus]) -> None:
+        label = self.battery_value_labels[component_key]
+        pixmap = self._battery_icons.get(status) if status is not None else None
+        if pixmap is not None and not pixmap.isNull():
+            label.setPixmap(pixmap)
+        else:
+            label.setText(INITIAL_VALUE)
 
     def _init_shortcuts(self) -> None:
         for key in (Qt.Key.Key_Escape, Qt.Key.Key_Q):
@@ -213,7 +250,7 @@ class ShiftingHudWindow(QWidget):
             shortcut.activated.connect(self.close)
 
     def reset_display(self) -> None:
-        """Reset all HUD metrics to '-' when the connection is lost."""
+        """Reset all HUD metrics to '--' when the connection is lost."""
         changed = False
         if self.front_value_label.text() != INITIAL_VALUE or self.front_block.isHidden():
             self.front_value_label.setText(INITIAL_VALUE)
@@ -226,9 +263,10 @@ class ShiftingHudWindow(QWidget):
             self.ratio_value_label.setText(INITIAL_VALUE)
             self.ratio_block.setVisible(False)
             changed = True
-        for label in self.battery_value_labels.values():
-            if label.text() != INITIAL_VALUE:
-                label.setText(INITIAL_VALUE)
+        for key, status in self.battery_statuses.items():
+            if status is not None:
+                self.battery_statuses[key] = None
+                self._set_battery_label(key, None)
                 changed = True
         if changed:
             self.adjustSize()
@@ -274,12 +312,13 @@ class ShiftingHudWindow(QWidget):
         if component_key is None:
             return
 
-        status_text = format_battery_status(data.status)
-        label = self.battery_value_labels[component_key]
-        if label.text() != status_text:
-            label.setText(status_text)
-            self.adjustSize()
-            self.update()
+        if self.battery_statuses.get(component_key) == data.status:
+            return
+
+        self.battery_statuses[component_key] = data.status
+        self._set_battery_label(component_key, data.status)
+        self.adjustSize()
+        self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         painter = QPainter(self)
