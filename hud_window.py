@@ -135,7 +135,7 @@ class ShiftingHudWindow(QWidget):
     MAIN_VALUE_MIN_WIDTH = 104
     SUB_VALUE_MIN_WIDTH = BATTERY_ICON_SIZE.width()
 
-    BG_COLOR = QColor(18, 20, 26, 88)
+    BG_COLOR = QColor(18, 20, 26, 105)
     BORDER_COLOR = QColor(255, 255, 255, 45)
 
     FONT_FAMILY = '"Avenir Next", "Segoe UI", sans-serif'
@@ -187,7 +187,7 @@ class ShiftingHudWindow(QWidget):
 
     def _init_ui(self) -> None:
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(20, 14, 20, 14)
+        root_layout.setContentsMargins(10, 8, 10, 8)
         root_layout.setSpacing(8)
         root_layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
 
@@ -213,7 +213,7 @@ class ShiftingHudWindow(QWidget):
 
         # --- Sub Content (Batteries: L, R, FD, RD) ---
         sub_layout = QHBoxLayout()
-        sub_layout.setContentsMargins(0, 2, 0, 0)
+        sub_layout.setContentsMargins(0, 0, 0, 0)
         sub_layout.setSpacing(16)
 
         self.battery_value_labels: dict[str, QLabel] = {}
@@ -230,8 +230,8 @@ class ShiftingHudWindow(QWidget):
         container = QWidget(self)
         container.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         title_label = QLabel(title, container)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
