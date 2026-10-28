@@ -1,4 +1,5 @@
 import contextlib
+import logging
 import sys
 import tempfile
 from pathlib import Path
@@ -508,3 +509,100 @@ def test_main_demo_flag(qapp: QApplication) -> None:
     with patch.object(QApplication, "exec", return_value=0):
         ret = main_mod.main(["--demo"])
         assert ret == 0
+
+
+def test_openant_timeout_warning_filter() -> None:
+    filter_obj = ant_worker.OpenantTimeoutWarningFilter()
+    test_logger = logging.getLogger("test.openant.base.ant")
+
+    # 1. At non-DEBUG level (INFO): timeout warning should be dropped (filter returns False)
+    test_logger.setLevel(logging.INFO)
+    rec_timeout = test_logger.makeRecord(
+        name=test_logger.name,
+        level=logging.WARNING,
+        fn="ant.py",
+        lno=234,
+        msg="%s, %r",
+        args=("usb.core.USBError", (None, b"libusb0-dll:err [_usb_reap_async] timeout error\n")),
+        exc_info=None,
+    )
+    assert filter_obj.filter(rec_timeout) is False
+
+    # 2. At DEBUG level: timeout warning should be downgraded to DEBUG level (filter returns True)
+    test_logger.setLevel(logging.DEBUG)
+    rec_debug = test_logger.makeRecord(
+        name=test_logger.name,
+        level=logging.WARNING,
+        fn="ant.py",
+        lno=234,
+        msg="%s, %r",
+        args=("usb.core.USBError", (None, b"libusb0-dll:err [_usb_reap_async] timeout error\n")),
+        exc_info=None,
+    )
+    assert filter_obj.filter(rec_debug) is True
+    assert rec_debug.levelno == logging.DEBUG
+    assert rec_debug.levelname == "DEBUG"
+
+    # 3. Unrelated warnings should always pass through untouched
+    test_logger.setLevel(logging.INFO)
+    rec_other = test_logger.makeRecord(
+        name=test_logger.name,
+        level=logging.WARNING,
+        fn="ant.py",
+        lno=206,
+        msg="Got unknown message, %r",
+        args=(123,),
+        exc_info=None,
+    )
+    assert filter_obj.filter(rec_other) is True
+    assert rec_other.levelno == logging.WARNING
+
+
+def test_patch_pyusb_libusb0_timeout() -> None:
+    import usb.backend.libusb0
+    import usb.core
+
+    # Ensure patched
+    assert ant_worker.patch_pyusb_libusb0_timeout() is True
+    patched_check = usb.backend.libusb0._check
+
+    class MockLib:
+        def __init__(self, msg: bytes) -> None:
+            self._msg = msg
+
+        def usb_strerror(self) -> bytes:
+            return self._msg
+
+    # Test 1: libusb0 async reap timeout with ret = None
+    usb.backend.libusb0._lib = MockLib(b"libusb0-dll:err [_usb_reap_async] timeout error\n")
+    with pytest.raises(usb.core.USBTimeoutError) as exc_info:
+        patched_check(None)
+    assert "timeout" in str(exc_info.value).lower()
+    assert isinstance(exc_info.value, usb.core.USBError)
+
+    # Test 2: MinGW ETIMEDOUT code (-116)
+    usb.backend.libusb0._lib = MockLib(b"No error")
+    with pytest.raises(usb.core.USBTimeoutError):
+        patched_check(-116)
+
+    # Test 3: Standard POSIX ETIMEDOUT (-110)
+    with pytest.raises(usb.core.USBTimeoutError):
+        patched_check(-110)
+
+    # Test 4: Genuine other error (e.g. -EIO or ret = -5)
+    usb.backend.libusb0._lib = MockLib(b"libusb0-dll:err [control_msg] failed")
+    with pytest.raises(usb.core.USBError) as exc_info2:
+        patched_check(-5)
+    assert not isinstance(exc_info2.value, usb.core.USBTimeoutError)
+
+    # Test 5: Positive return (bytes transferred) returns value unchanged
+    assert patched_check(128) == 128
+
+
+def test_apply_usb_fixes_idempotent() -> None:
+    ant_worker.apply_usb_fixes()
+    ant_worker.apply_usb_fixes()
+    openant_logger = logging.getLogger("openant.base.ant")
+    matching_filters = [f for f in openant_logger.filters if isinstance(f, ant_worker.OpenantTimeoutWarningFilter)]
+    assert len(matching_filters) == 1
+

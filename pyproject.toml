@@ -38,7 +38,7 @@ strict = true
 python_version = "3.13"
 
 [[tool.mypy.overrides]]
-module = ["openant.*"]
+module = ["openant.*", "usb.*"]
 ignore_missing_imports = true
 
 

@@ -1,8 +1,11 @@
 import dataclasses
+import errno
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
+from typing import Any
 
 from openant.base.message import Message
 from openant.devices import ANTPLUS_NETWORK_KEY
@@ -23,6 +26,96 @@ MAX_BATTERY_SLOTS = 16
 DEFAULT_INACTIVITY_TIMEOUT = 30.0
 DEFAULT_DISCOVERY_POLL_INTERVAL = 1.0
 DEFAULT_RETRY_DELAY = 3.0
+
+
+class OpenantTimeoutWarningFilter(logging.Filter):
+    """
+    Filter out false-positive USB read timeout warnings logged by openant on Windows.
+    When debug logging is disabled, timeout warnings from openant are dropped.
+    When debug logging is enabled, they are downgraded to DEBUG level.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.WARNING:
+            msg = record.getMessage()
+            if "timeout error" in msg.lower() or "_usb_reap_async" in msg.lower():
+                logger = logging.getLogger(record.name)
+                if not logger.isEnabledFor(logging.DEBUG):
+                    return False
+                record.levelno = logging.DEBUG
+                record.levelname = "DEBUG"
+        return True
+
+
+_usb_fixes_applied = False
+
+
+def patch_pyusb_libusb0_timeout() -> bool:
+    """
+    Patch pyusb's libusb0 backend (_check function) so that Windows libusb-win32
+    read timeouts (such as [_usb_reap_async] timeout error) properly raise
+    usb.core.USBTimeoutError instead of generic usb.core.USBError.
+    This prevents openant from treating normal read timeouts as unexpected errors.
+    """
+    try:
+        import usb.backend.libusb0
+        import usb.core
+    except ImportError:
+        return False
+
+    orig_check = getattr(usb.backend.libusb0, "_check", None)
+    if orig_check is None or getattr(orig_check, "_is_timeout_patched", False):
+        return True
+
+    def _patched_check(ret: Any) -> Any:
+        lib = getattr(usb.backend.libusb0, "_lib", None)
+        if ret is None:
+            errmsg = lib.usb_strerror() if lib is not None else ""
+        else:
+            if hasattr(ret, "value"):
+                ret = ret.value
+            if ret < 0:
+                errmsg = lib.usb_strerror() if lib is not None else ""
+                if hasattr(errmsg, "lower") and errmsg.lower() == "no error":
+                    errmsg = os.strerror(-ret)
+            else:
+                return ret
+
+        is_timeout = False
+        timeout_errno = getattr(errno, "ETIMEDOUT", 110)
+        # Windows / MinGW / POSIX timeout errno checks (110 = Linux, 116 = MinGW/libusb0, 138 = MSVC)
+        if ret is not None and (-ret == timeout_errno or -ret in (110, 116, 138)):
+            is_timeout = True
+        elif errmsg:
+            err_bytes = errmsg if isinstance(errmsg, bytes) else str(errmsg).encode("latin1", errors="ignore")
+            if b"timeout" in err_bytes.lower() or b"_usb_reap_async" in err_bytes.lower():
+                is_timeout = True
+
+        if is_timeout:
+            raise usb.core.USBTimeoutError(errmsg, ret, -ret if ret is not None else timeout_errno)
+        raise usb.core.USBError(errmsg, ret)
+
+    _patched_check._is_timeout_patched = True  # type: ignore[attr-defined]
+    usb.backend.libusb0._check = _patched_check
+    return True
+
+
+def apply_usb_fixes() -> None:
+    """Apply PyUSB libusb0 timeout normalization and openant logging filter."""
+    global _usb_fixes_applied
+    if _usb_fixes_applied:
+        return
+    _usb_fixes_applied = True
+
+    patch_pyusb_libusb0_timeout()
+
+    openant_logger = logging.getLogger("openant.base.ant")
+    if not any(isinstance(f, OpenantTimeoutWarningFilter) for f in openant_logger.filters):
+        openant_logger.addFilter(OpenantTimeoutWarningFilter())
+
+
+apply_usb_fixes()
+
 
 
 class HudShiftingDevice(Shifting):  # type: ignore[misc]
@@ -167,6 +260,7 @@ class AntShiftingWorker:
         inactivity_timeout: float = DEFAULT_INACTIVITY_TIMEOUT,
         discovery_poll_interval: float = DEFAULT_DISCOVERY_POLL_INTERVAL,
     ):
+        apply_usb_fixes()
         self.ant_id = ant_id
         self._active_ant_id = ant_id
         self._on_shift = on_shift
