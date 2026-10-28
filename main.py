@@ -16,7 +16,7 @@ _logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="ANT+ Shifting (Di2 / AXS) HUD Desktop Application")
+    parser = argparse.ArgumentParser(description="ANT+ Shifting HUD Desktop Application")
     parser.add_argument(
         "-s",
         "--settings",
