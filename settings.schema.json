@@ -15,14 +15,18 @@
           "items": {
             "type": "number",
             "exclusiveMinimum": 0
-          }
+          },
+          "minItems": 1,
+          "maxItems": 3
         },
         "rear": {
           "type": "array",
           "items": {
             "type": "number",
             "exclusiveMinimum": 0
-          }
+          },
+          "minItems": 1,
+          "maxItems": 15
         }
       }
     }
