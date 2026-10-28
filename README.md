@@ -194,3 +194,9 @@ ______________________________________________________________________
 本プロジェクトは [MIT License](LICENSE) の下で公開されています。
 
 Copyright (c) Ryusuke SEKIYAMA \<rsky0711@gamil.com>
+
+### サードパーティ製アセットのライセンス
+
+- **[Akar Icons](https://akaricons.com/)** (`icons/`)
+  - Copyright (c) 2020 Arturo Wibawa
+  - [MIT License](icons/LICENSE) の下で提供されています。

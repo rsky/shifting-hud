@@ -47,6 +47,7 @@ ICONS_DIR = Path(__file__).resolve().parent / "icons"
 BATTERY_ICON_CROP_RECT = QRect(0, 8, 48, 32)
 BATTERY_ICON_SIZE = QSize(24, 16)
 
+# Battery icons are from Akar Icons (https://akaricons.com/), licensed under MIT License.
 BATTERY_ICON_FILES: dict[BatteryStatus, str] = {
     BatteryStatus.New: "akar-icons--battery-full.png",
     BatteryStatus.Good: "akar-icons--battery-full.png",
