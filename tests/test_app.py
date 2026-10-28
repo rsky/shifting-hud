@@ -179,8 +179,9 @@ def test_hud_shifting_device_packets() -> None:
         on_battery_callback=received_batteries.append,
     )
 
-    # Page 1 (0x01) with event_count = 0: gear_front=2, gear_rear=5, total_front=2, total_rear=12
-    dev._on_data([0x01, 0x00, 0xFF, 0x45, 0x4C, 0x00, 0x00, 0x00])
+    # Page 1 (0x01) with raw data[3]=0x24 (0-based raw front=1, rear=4, total front=2, rear=12):
+    # Converted to 1-based gear_front=2, gear_rear=5
+    dev._on_data([0x01, 0x00, 0xFF, 0x24, 0x4C, 0x00, 0x00, 0x00])
     assert len(received_shifts) == 1
     shift = received_shifts[-1]
     assert shift.gear_front == 2
@@ -189,10 +190,24 @@ def test_hud_shifting_device_packets() -> None:
     assert shift.total_rear == 12
     assert shift is not dev.data["shift"]
 
+    # Inner-lowest gear: raw front=0, raw rear=0 -> 1-based gear_front=1, gear_rear=1
+    dev._on_data([0x01, 0x01, 0xFF, 0x00, 0x4C, 0x00, 0x00, 0x00])
+    assert len(received_shifts) == 2
+    inner_shift = received_shifts[-1]
+    assert inner_shift.gear_front == 1
+    assert inner_shift.gear_rear == 1
+
+    # 1x setup without FD: raw front=7 (0xE0) preserved as INVALID_GEAR_FRONT (7), raw rear=11 -> 12
+    dev._on_data([0x01, 0x02, 0xFF, 0xEB, 0x0C, 0x00, 0x00, 0x00])
+    assert len(received_shifts) == 3
+    single_shift = received_shifts[-1]
+    assert single_shift.gear_front == ant_worker.INVALID_GEAR_FRONT
+    assert single_shift.gear_rear == 12
+
     # Page 4 (0x04) must preserve gear_front / gear_rear
     dev._on_data([0x04, 0x01, 10, 10, 5, 5, 0x00, 0x00])
-    assert dev.data["shift"].gear_front == 2
-    assert dev.data["shift"].gear_rear == 5
+    assert dev.data["shift"].gear_front == ant_worker.INVALID_GEAR_FRONT
+    assert dev.data["shift"].gear_rear == 12
 
     # Common Page 82 (0x52) for LeftShifter (id=3), status=Good (2)
     dev._on_data([82, 0xFF, 0x34, 0x00, 0x00, 0x00, 0x00, 0x23])
@@ -224,12 +239,12 @@ def test_hud_shifting_device_wildcard_discovery() -> None:
     assert dev.device_id == 0
 
     # Non-extended packet while device_id == 0 is ignored until a device ID is discovered
-    dev._on_data([0x01, 0x00, 0xFF, 0x45, 0x4C, 0x00, 0x00, 0x00])
+    dev._on_data([0x01, 0x00, 0xFF, 0x24, 0x4C, 0x00, 0x00, 0x00])
     assert dev.device_id == 0
     assert len(received_shifts) == 0
 
-    # Extended packet with device_id = 0x3039 (12345), device_type = 0x22 (34), trans_type = 0x05
-    ext_packet_12345 = [0x01, 0x01, 0xFF, 0x45, 0x4C, 0x00, 0x00, 0x00, 0x80, 0x39, 0x30, 0x22, 0x05]
+    # Extended packet with device_id = 0x3039 (12345), device_type = 0x22 (34), trans_type = 0x05, raw gear = 0x24
+    ext_packet_12345 = [0x01, 0x01, 0xFF, 0x24, 0x4C, 0x00, 0x00, 0x00, 0x80, 0x39, 0x30, 0x22, 0x05]
     dev._on_data(ext_packet_12345)
 
     # Device ID is discovered and locked without calling channel.close() (avoiding CHANNEL_IN_WRONG_STATE)
@@ -348,6 +363,15 @@ def test_hud_window_ui_and_rendering(qapp: QApplication) -> None:
     # 1x setup without FD (gear_front=7 invalid, gear_rear=12 valid):
     # FRONT block hidden, RATIO calculated with teeth.front[0] (34 / 11 = 3.09)
     win.update_shift_data(ShiftData(gear_front=7, total_front=0, gear_rear=12, total_rear=12))
+    qapp.processEvents()
+    assert not win.front_block.isVisible()
+    assert win.rear_value_label.text() == "12/12"
+    assert win.ratio_block.isVisible()
+    assert win.ratio_value_label.text() == "3.09"
+
+    # 1x setup with total_front=1 (gear_front=1, gear_rear=12 valid):
+    # FRONT block hidden, RATIO calculated with teeth.front[0] (34 / 11 = 3.09)
+    win.update_shift_data(ShiftData(gear_front=1, total_front=1, gear_rear=12, total_rear=12))
     qapp.processEvents()
     assert not win.front_block.isVisible()
     assert win.rear_value_label.text() == "12/12"

@@ -27,10 +27,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ant_worker import INVALID_GEAR_FRONT as INVALID_GEAR_FRONT
+from ant_worker import INVALID_GEAR_REAR as INVALID_GEAR_REAR
 from settings import AppSettings
-
-INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
-INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
 
 BATTERY_COMPONENT_KEYS = {
     ShiftingSystemID.LeftShifter: "L",
@@ -316,8 +315,8 @@ class ShiftingHudWindow(QWidget):
         front_text, valid_front = format_gear_text(data.gear_front, data.total_front, INVALID_GEAR_FRONT)
         rear_text, valid_rear = format_gear_text(data.gear_rear, data.total_rear, INVALID_GEAR_REAR)
 
-        # Hide FRONT block when FD is absent (1x setup: front unknown while rear is valid)
-        front_visible = not (valid_front is None and valid_rear is not None)
+        # Hide FRONT block when single chainring (total_front == 1) or FD is absent (1x setup) while rear is valid
+        front_visible = not (valid_rear is not None and (data.total_front == 1 or valid_front is None))
 
         ratio = self.settings.calculate_gear_ratio(valid_front, valid_rear)
         ratio_visible = ratio is not None

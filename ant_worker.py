@@ -14,6 +14,8 @@ _logger = logging.getLogger(__name__)
 
 # ANT+ Shifting Profile (Device Type 0x22 / 34)
 SHIFTING_DEVICE_TYPE = 0x22  # 34
+INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
+INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
 SHIFT_STATUS_PAGE = 0x01
 STANDARD_PAYLOAD_LEN = 8
 EXTENDED_HEADER_MIN_LEN = 13
@@ -133,9 +135,14 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
             self._event_count[0][0] = self._event_count[0][1]
             self._event_count[0][1] = data[1]
 
+            raw_gear_rear = data[3] & 0x1F
+            raw_gear_front = (data[3] & 0xE0) >> 5
+
             shift: ShiftData = self.data["shift"]
-            shift.gear_rear = data[3] & 0x1F
-            shift.gear_front = (data[3] & 0xE0) >> 5
+            # ANT+ Shifting profile transmits 0-indexed gear positions (0 = innermost gear).
+            # Convert to 1-based gear numbers (1 = innermost) used throughout the application.
+            shift.gear_rear = raw_gear_rear + 1 if raw_gear_rear < INVALID_GEAR_REAR else INVALID_GEAR_REAR
+            shift.gear_front = raw_gear_front + 1 if raw_gear_front < INVALID_GEAR_FRONT else INVALID_GEAR_FRONT
             shift.total_rear = data[4] & 0x1F
             shift.total_front = (data[4] & 0xE0) >> 5
             shift.invalid_inboard_rear = data[5] & 0x0F
