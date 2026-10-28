@@ -279,20 +279,29 @@ class ShiftingHudWindow(QWidget):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(self.close)
 
+    @staticmethod
+    def _update_metric_block(
+        label: QLabel,
+        text: str,
+        block: QWidget | None = None,
+        visible: bool = True,
+    ) -> bool:
+        changed = False
+        if label.text() != text:
+            label.setText(text)
+            changed = True
+        if block is not None and block.isHidden() == visible:
+            block.setVisible(visible)
+            changed = True
+        return changed
+
     def reset_display(self) -> None:
         """Reset all HUD metrics to '--' when the connection is lost."""
-        changed = False
-        if self.front_value_label.text() != INITIAL_VALUE or self.front_block.isHidden():
-            self.front_value_label.setText(INITIAL_VALUE)
-            self.front_block.setVisible(True)
-            changed = True
-        if self.rear_value_label.text() != INITIAL_VALUE:
-            self.rear_value_label.setText(INITIAL_VALUE)
-            changed = True
-        if self.ratio_value_label.text() != INITIAL_VALUE or not self.ratio_block.isHidden():
-            self.ratio_value_label.setText(INITIAL_VALUE)
-            self.ratio_block.setVisible(False)
-            changed = True
+        changed = (
+            self._update_metric_block(self.front_value_label, INITIAL_VALUE, self.front_block, True)
+            | self._update_metric_block(self.rear_value_label, INITIAL_VALUE)
+            | self._update_metric_block(self.ratio_value_label, INITIAL_VALUE, self.ratio_block, False)
+        )
         for key, status in self.battery_statuses.items():
             if status is not None:
                 self.battery_statuses[key] = None
@@ -314,23 +323,11 @@ class ShiftingHudWindow(QWidget):
         ratio_visible = ratio is not None
         ratio_text = f"{ratio:.2f}" if ratio is not None else INITIAL_VALUE
 
-        changed = False
-        if self.front_value_label.text() != front_text:
-            self.front_value_label.setText(front_text)
-            changed = True
-        if self.front_block.isHidden() == front_visible:
-            self.front_block.setVisible(front_visible)
-            changed = True
-        if self.rear_value_label.text() != rear_text:
-            self.rear_value_label.setText(rear_text)
-            changed = True
-        if self.ratio_value_label.text() != ratio_text:
-            self.ratio_value_label.setText(ratio_text)
-            changed = True
-        if self.ratio_block.isHidden() == ratio_visible:
-            self.ratio_block.setVisible(ratio_visible)
-            changed = True
-
+        changed = (
+            self._update_metric_block(self.front_value_label, front_text, self.front_block, front_visible)
+            | self._update_metric_block(self.rear_value_label, rear_text)
+            | self._update_metric_block(self.ratio_value_label, ratio_text, self.ratio_block, ratio_visible)
+        )
         if changed:
             self.adjustSize()
             self.update()

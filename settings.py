@@ -48,20 +48,27 @@ class AppSettings:
         front_index = 0 if gear_front is None else gear_front - 1
         rear_index = gear_rear - 1
 
-        try:
-            if front_index < 0 or rear_index < 0:
-                raise IndexError("Gear number must be >= 1")
-            front_teeth = self.teeth.front[front_index]
-            rear_teeth = self.teeth.rear[rear_index]
-            if rear_teeth <= 0:
-                return None
-            return float(front_teeth) / float(rear_teeth)
-        except IndexError:
+        if not (0 <= front_index < len(self.teeth.front) and 0 <= rear_index < len(self.teeth.rear)):
             return None
+
+        front_teeth = self.teeth.front[front_index]
+        rear_teeth = self.teeth.rear[rear_index]
+        if rear_teeth <= 0:
+            return None
+        return float(front_teeth) / float(rear_teeth)
 
 
 def _is_valid_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _parse_teeth_list(teeth_raw: dict[str, Any], key: str) -> list[float] | None:
+    value = teeth_raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(_is_valid_number(x) and float(x) > 0 for x in value):
+        raise ValueError(f"'teeth.{key}' must be an array of positive numbers")
+    return [float(x) for x in value]
 
 
 def validate_and_parse_settings(raw: Any) -> AppSettings:
@@ -82,24 +89,10 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
         if not isinstance(teeth_raw, dict):
             raise ValueError("'teeth' must be an object")
 
-        front_list: list[float] | None = None
-        rear_list: list[float] | None = None
-
-        if "front" in teeth_raw and teeth_raw["front"] is not None:
-            if not isinstance(teeth_raw["front"], list) or not all(
-                _is_valid_number(x) and float(x) > 0 for x in teeth_raw["front"]
-            ):
-                raise ValueError("'teeth.front' must be an array of positive numbers")
-            front_list = [float(x) for x in teeth_raw["front"]]
-
-        if "rear" in teeth_raw and teeth_raw["rear"] is not None:
-            if not isinstance(teeth_raw["rear"], list) or not all(
-                _is_valid_number(x) and float(x) > 0 for x in teeth_raw["rear"]
-            ):
-                raise ValueError("'teeth.rear' must be an array of positive numbers")
-            rear_list = [float(x) for x in teeth_raw["rear"]]
-
-        teeth_settings = TeethSettings(front=front_list, rear=rear_list)
+        teeth_settings = TeethSettings(
+            front=_parse_teeth_list(teeth_raw, "front"),
+            rear=_parse_teeth_list(teeth_raw, "rear"),
+        )
 
     return AppSettings(ant_id=int(ant_id_raw), teeth=teeth_settings)
 

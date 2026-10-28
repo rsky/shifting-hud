@@ -207,6 +207,74 @@ def test_hud_shifting_device_packets() -> None:
     assert dev.last_rx_time is not None
 
 
+def test_hud_shifting_device_wildcard_discovery() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    received_shifts: list[ShiftData] = []
+    received_batteries: list[BatteryData] = []
+
+    dev = ant_worker.HudShiftingDevice(
+        mock_node,
+        device_id=0,
+        on_shift_callback=received_shifts.append,
+        on_battery_callback=received_batteries.append,
+    )
+    assert dev.device_id == 0
+
+    # Non-extended packet while device_id == 0 is ignored until a device ID is discovered
+    dev._on_data([0x01, 0x00, 0xFF, 0x45, 0x4C, 0x00, 0x00, 0x00])
+    assert dev.device_id == 0
+    assert len(received_shifts) == 0
+
+    # Extended packet with device_id = 0x3039 (12345), device_type = 0x22 (34), trans_type = 0x05
+    ext_packet_12345 = [0x01, 0x01, 0xFF, 0x45, 0x4C, 0x00, 0x00, 0x00, 0x80, 0x39, 0x30, 0x22, 0x05]
+    dev._on_data(ext_packet_12345)
+
+    # Device ID is discovered and locked without calling channel.close() (avoiding CHANNEL_IN_WRONG_STATE)
+    assert dev.device_id == 12345
+    assert dev.trans_type == 0x05
+    assert dev._attached is True
+    assert mock_channel.close.call_count == 0
+    assert len(received_shifts) == 1
+    assert received_shifts[-1].gear_front == 2
+    assert received_shifts[-1].gear_rear == 5
+
+    # Packet from a different device_id (0x270F = 9999) is ignored
+    ext_packet_9999 = [0x01, 0x02, 0xFF, 0x21, 0x4C, 0x00, 0x00, 0x00, 0x80, 0x0F, 0x27, 0x22, 0x05]
+    dev._on_data(ext_packet_9999)
+    assert dev.device_id == 12345
+    assert len(received_shifts) == 1
+
+
+def test_worker_discovery_polling() -> None:
+    worker = ant_worker.AntShiftingWorker(
+        ant_id=0,
+        on_shift=lambda _: None,
+        on_battery=lambda _: None,
+        discovery_poll_interval=1.0,
+    )
+    assert worker.active_ant_id == 0
+    assert worker.poll_discovery() is None
+
+    mock_device = MagicMock()
+    mock_device.device_id = 0
+    worker._device = mock_device
+
+    # Still undiscovered (device_id == 0)
+    assert worker.poll_discovery() is None
+    assert worker.active_ant_id == 0
+
+    # Device discovered by listener (device_id == 12345)
+    mock_device.device_id = 12345
+    assert worker.poll_discovery() == 12345
+    assert worker.active_ant_id == 12345
+
+    # Subsequent polls return the locked active_ant_id
+    assert worker.poll_discovery() == 12345
+
+
 def test_worker_inactivity_watchdog() -> None:
     lost_count = 0
 
