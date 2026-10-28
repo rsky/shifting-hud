@@ -46,20 +46,21 @@ INITIAL_VALUE = "--"
 ICONS_DIR = Path(__file__).resolve().parent / "icons"
 BATTERY_ICON_CROP_RECT = QRect(0, 8, 48, 32)
 BATTERY_ICON_SIZE = QSize(24, 16)
+BATTERY_ICON_DPR = 2.0
 
 # Battery icons are from Akar Icons (https://akaricons.com/), licensed under MIT License.
 BATTERY_ICON_FILES: dict[BatteryStatus, str] = {
-    BatteryStatus.New: "akar-icons--battery-full.png",
-    BatteryStatus.Good: "akar-icons--battery-full.png",
-    BatteryStatus.Ok: "akar-icons--battery-medium.png",
-    BatteryStatus.Low: "akar-icons--battery-low.png",
-    BatteryStatus.Critical: "akar-icons--battery-empty.png",
-    BatteryStatus.Charging: "akar-icons--battery-charging.png",
+    BatteryStatus.New: "akar-icons--battery-full@2x.png",
+    BatteryStatus.Good: "akar-icons--battery-full@2x.png",
+    BatteryStatus.Ok: "akar-icons--battery-medium@2x.png",
+    BatteryStatus.Low: "akar-icons--battery-low@2x.png",
+    BatteryStatus.Critical: "akar-icons--battery-empty@2x.png",
+    BatteryStatus.Charging: "akar-icons--battery-charging@2x.png",
 }
 
 
 def load_battery_icons(icons_dir: Path = ICONS_DIR) -> dict[BatteryStatus, QPixmap]:
-    """Load, crop (48x48 -> 48x32), and scale to 24x16 QPixmap for battery statuses."""
+    """Load and crop @2x icons (48x48 -> 48x32) with devicePixelRatio=2.0 (logical 24x16)."""
     pixmap_cache: dict[str, QPixmap] = {}
     icons: dict[BatteryStatus, QPixmap] = {}
     for status, filename in BATTERY_ICON_FILES.items():
@@ -67,12 +68,9 @@ def load_battery_icons(icons_dir: Path = ICONS_DIR) -> dict[BatteryStatus, QPixm
             img = QImage(str(icons_dir / filename))
             if not img.isNull():
                 cropped = img.copy(BATTERY_ICON_CROP_RECT)
-                scaled = cropped.scaled(
-                    BATTERY_ICON_SIZE,
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                pixmap_cache[filename] = QPixmap.fromImage(scaled)
+                pixmap = QPixmap.fromImage(cropped)
+                pixmap.setDevicePixelRatio(BATTERY_ICON_DPR)
+                pixmap_cache[filename] = pixmap
         if filename in pixmap_cache:
             icons[status] = pixmap_cache[filename]
     return icons

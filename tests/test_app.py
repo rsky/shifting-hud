@@ -349,7 +349,9 @@ def test_battery_icon_mapping(qapp: QApplication) -> None:
         assert win.battery_statuses["RD"] == status
         pix = win.battery_value_labels["RD"].pixmap()
         assert not pix.isNull()
-        assert pix.size() == hud_window.BATTERY_ICON_SIZE
+        assert pix.devicePixelRatio() == hud_window.BATTERY_ICON_DPR
+        assert pix.size() == hud_window.BATTERY_ICON_CROP_RECT.size()
+        assert win.battery_value_labels["RD"].sizeHint() == hud_window.BATTERY_ICON_SIZE
         assert pix.cacheKey() == win._battery_icons[status].cacheKey()
 
     # Differential update: repeating identical BatteryData should not trigger adjustSize()
