@@ -2,6 +2,7 @@ import contextlib
 import logging
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -238,6 +239,50 @@ def test_battery_debug_logging(caplog: pytest.LogCaptureFixture) -> None:
     assert "Battery update: ID=3 (LeftShifter)" in caplog.text
     assert "All active battery states" in caplog.text
     assert "Slot 3 (LeftShifter)" in caplog.text
+
+
+def test_request_shifter_battery_pages_on_first_rd_battery() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    with patch.object(dev, "request_battery_page") as mock_req:
+        # First RD battery packet (battery_id=2 = RearDerailleur)
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.New))
+
+        # Wait briefly for the worker thread to spawn and execute
+        time.sleep(0.4)
+
+        # Both LeftShifter (3) and RightShifter (4) requested
+        assert mock_req.call_count == 2
+        mock_req.assert_any_call(ShiftingSystemID.LeftShifter.value)
+        mock_req.assert_any_call(ShiftingSystemID.RightShifter.value)
+
+        # Second RD battery packet does not re-request
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.New))
+        time.sleep(0.1)
+        assert mock_req.call_count == 2
+
+
+def test_no_request_when_shifters_already_received() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    with patch.object(dev, "request_battery_page") as mock_req:
+        # Pre-receive Left and Right shifters
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.LeftShifter.value, status=BatteryStatus.Good))
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RightShifter.value, status=BatteryStatus.Good))
+
+        # Then RD battery arrives
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.New))
+
+        time.sleep(0.1)
+        assert mock_req.call_count == 0
 
 
 def test_hud_shifting_device_wildcard_discovery() -> None:

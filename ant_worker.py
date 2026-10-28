@@ -19,6 +19,7 @@ _logger = logging.getLogger(__name__)
 SHIFTING_DEVICE_TYPE = 0x22  # 34
 INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
 INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
+PAGE_REQUEST_DATA = 0x46  # 70 Request Data Page
 SHIFT_STATUS_PAGE = 0x01
 BATTERY_STATUS_PAGE = 82  # 0x52 Common Data Page
 STANDARD_PAYLOAD_LEN = 8
@@ -27,6 +28,7 @@ MAX_BATTERY_SLOTS = 16
 DEFAULT_INACTIVITY_TIMEOUT = 30.0
 DEFAULT_DISCOVERY_POLL_INTERVAL = 1.0
 DEFAULT_RETRY_DELAY = 3.0
+BATTERY_REQUEST_INTERVAL = 0.3
 
 
 class OpenantTimeoutWarningFilter(logging.Filter):
@@ -140,6 +142,8 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         self.device_id: int = device_id
         self.trans_type: int = trans_type
         self._attached: bool = False
+        self._received_battery_ids: set[int] = set()
+        self._rd_battery_requested: bool = False
         super().__init__(
             node=node,
             device_id=device_id,
@@ -213,6 +217,47 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         except Exception as e:
             _logger.debug(f"Error closing channel: {e}")
 
+    def request_battery_page(self, component_id: int | None = None, no_times: int = 2) -> None:
+        """
+        Request Common Page 82 (Battery Status) using Page 70 (Request Data Page).
+        If component_id is specified (e.g. 3 for LeftShifter, 4 for RightShifter),
+        it is placed in Descriptor Byte 1 (Byte 3).
+        """
+        desc1 = component_id if component_id is not None else 0xFF
+        desc2 = 0xFF
+        data = [
+            PAGE_REQUEST_DATA,  # Byte 0: Page 70 (Request Data Page)
+            0xFF,
+            0xFF,  # Byte 1-2: Serial Number (0xFF = invalid/any)
+            desc1 & 0xFF,  # Byte 3: Descriptor Byte 1 (Component ID)
+            desc2 & 0xFF,  # Byte 4: Descriptor Byte 2
+            no_times & 0x7F,  # Byte 5: Response times (broadcast)
+            BATTERY_STATUS_PAGE,  # Byte 6: Requested Page Number (82 = 0x52)
+            0x01,  # Byte 7: Command Type (0x01 = Request Data Page)
+        ]
+        _logger.info(
+            f"Sending Page 70 request for Page 82 (Battery), component ID={component_id} ({[f'0x{b:02X}' for b in data]})"
+        )
+        try:
+            if hasattr(self, "channel") and self.channel is not None:
+                self.channel.send_broadcast_data(data)
+        except Exception as e:
+            _logger.warning(f"Failed to send Page 70 request for component ID={component_id}: {e}")
+
+    def _request_shifter_batteries(self) -> None:
+        """Asynchronously request Left and Right shifter battery pages separated by 300ms."""
+
+        def _worker() -> None:
+            left_id = ShiftingSystemID.LeftShifter.value
+            right_id = ShiftingSystemID.RightShifter.value
+            if left_id not in self._received_battery_ids:
+                self.request_battery_page(left_id)
+                time.sleep(BATTERY_REQUEST_INTERVAL)
+            if right_id not in self._received_battery_ids:
+                self.request_battery_page(right_id)
+
+        threading.Thread(target=_worker, name="RequestShifterBattery", daemon=True).start()
+
     def on_device_data(self, page: int, page_name: str, data: ShiftData) -> None:
         if page == SHIFT_STATUS_PAGE and isinstance(data, ShiftData) and self._on_shift_callback is not None:
             self._on_shift_callback(dataclasses.replace(data))
@@ -220,6 +265,8 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
     def on_battery(self, data: BatteryData) -> None:
         if not isinstance(data, BatteryData):
             return
+
+        self._received_battery_ids.add(data.battery_id)
 
         system_id = ShiftingSystemID(data.battery_id) if data.battery_id != 0xFF else ShiftingSystemID.Unknown
         status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
@@ -259,6 +306,17 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
 
         if self._on_battery_callback is not None:
             self._on_battery_callback(dataclasses.replace(data))
+
+        # On initial reception of RearDerailleur battery, request shifter batteries if not yet received
+        if data.battery_id == ShiftingSystemID.RearDerailleur.value and not self._rd_battery_requested:
+            self._rd_battery_requested = True
+            left_id = ShiftingSystemID.LeftShifter.value
+            right_id = ShiftingSystemID.RightShifter.value
+            if left_id not in self._received_battery_ids or right_id not in self._received_battery_ids:
+                _logger.info(
+                    "First RD battery received and shifter batteries are missing; requesting LeftShifter (ID=3) and RightShifter (ID=4) via Page 70..."
+                )
+                self._request_shifter_batteries()
 
     def on_data(self, data: list[int]) -> None:
         if not data:
