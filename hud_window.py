@@ -1,3 +1,4 @@
+import logging
 import sys
 from pathlib import Path
 
@@ -30,6 +31,8 @@ from PySide6.QtWidgets import (
 from ant_worker import INVALID_GEAR_FRONT as INVALID_GEAR_FRONT
 from ant_worker import INVALID_GEAR_REAR as INVALID_GEAR_REAR
 from settings import AppSettings
+
+_logger = logging.getLogger(__name__)
 
 BATTERY_COMPONENT_KEYS = {
     ShiftingSystemID.LeftShifter: "L",
@@ -335,7 +338,17 @@ class ShiftingHudWindow(QWidget):
         """Update L, R, FD, RD battery display from BatteryData (only redraws on change)."""
         system_id = ShiftingSystemID(data.battery_id) if data.battery_id != 0xFF else ShiftingSystemID.Unknown
         component_key = BATTERY_COMPONENT_KEYS.get(system_id)
+        status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
+
+        _logger.debug(
+            f"HUD received battery data: ID={data.battery_id} ({system_id.name}) -> component={component_key}, status={status_name}"
+        )
+
         if component_key is None:
+            _logger.debug(
+                f"Ignored battery data for unmapped system ID {data.battery_id} ({system_id.name}); "
+                f"mapped components are: { {k.name: v for k, v in BATTERY_COMPONENT_KEYS.items()} }"
+            )
             return
 
         if self.battery_statuses.get(component_key) == data.status:

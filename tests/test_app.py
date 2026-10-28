@@ -223,6 +223,23 @@ def test_hud_shifting_device_packets() -> None:
     assert dev.last_rx_time is not None
 
 
+def test_battery_debug_logging(caplog: pytest.LogCaptureFixture) -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    with caplog.at_level(logging.DEBUG):
+        # Send Page 82 for LeftShifter (id=3, status=Good=2, 3.0V)
+        dev._on_data([82, 0xFF, 0x34, 0x00, 0x00, 0x00, 0x00, 0x23])
+
+    assert "Raw Page 82 (Battery) packet" in caplog.text
+    assert "Battery update: ID=3 (LeftShifter)" in caplog.text
+    assert "All active battery states" in caplog.text
+    assert "Slot 3 (LeftShifter)" in caplog.text
+
+
 def test_hud_shifting_device_wildcard_discovery() -> None:
     mock_node = MagicMock()
     mock_channel = MagicMock()

@@ -9,8 +9,8 @@ from typing import Any
 
 from openant.base.message import Message
 from openant.devices import ANTPLUS_NETWORK_KEY
-from openant.devices.common import BatteryData
-from openant.devices.shift import ShiftData, Shifting
+from openant.devices.common import BatteryData, BatteryStatus
+from openant.devices.shift import ShiftData, Shifting, ShiftingSystemID
 from openant.easy.node import Node
 
 _logger = logging.getLogger(__name__)
@@ -20,6 +20,7 @@ SHIFTING_DEVICE_TYPE = 0x22  # 34
 INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
 INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
 SHIFT_STATUS_PAGE = 0x01
+BATTERY_STATUS_PAGE = 82  # 0x52 Common Data Page
 STANDARD_PAYLOAD_LEN = 8
 EXTENDED_HEADER_MIN_LEN = 13
 MAX_BATTERY_SLOTS = 16
@@ -180,6 +181,10 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
     def _on_data(self, data: list[int]) -> None:
         if not self._accept_packet(data):
             return
+
+        if data and data[0] == BATTERY_STATUS_PAGE:
+            _logger.debug(f"Raw Page 82 (Battery) packet: {[f'0x{b:02X}' for b in data]}")
+
         if STANDARD_PAYLOAD_LEN < len(data) < EXTENDED_HEADER_MIN_LEN:
             # Truncate malformed extended payload (< 13 bytes) to 8 bytes so super()._on_data won't IndexError
             data = data[:STANDARD_PAYLOAD_LEN]
@@ -213,7 +218,46 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
             self._on_shift_callback(dataclasses.replace(data))
 
     def on_battery(self, data: BatteryData) -> None:
-        if isinstance(data, BatteryData) and self._on_battery_callback is not None:
+        if not isinstance(data, BatteryData):
+            return
+
+        system_id = ShiftingSystemID(data.battery_id) if data.battery_id != 0xFF else ShiftingSystemID.Unknown
+        status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
+        voltage_str = (
+            f"{data.voltage_coarse + data.voltage_fractional:.2f}V"
+            if (data.voltage_coarse is not None and data.voltage_fractional is not None)
+            else "N/A"
+        )
+        _logger.debug(
+            f"Battery update: ID={data.battery_id} ({system_id.name}), status={status_name}, "
+            f"voltage={voltage_str}, operating_time={data.operating_time}s"
+        )
+
+        if _logger.isEnabledFor(logging.DEBUG):
+            # Dump all battery slots (0..15) that have reported data
+            active_slots: list[str] = []
+            batteries: list[BatteryData] = self.data.get("batteries", [])
+            for idx, b in enumerate(batteries):
+                b_status = getattr(b, "status", None)
+                if b_status is not None and b_status != BatteryStatus.Invalid:
+                    b_sys = ShiftingSystemID(idx) if idx < 12 else ShiftingSystemID.Unknown
+                    b_status_str = b_status.name if hasattr(b_status, "name") else str(b_status)
+                    b_volt = (
+                        f"{b.voltage_coarse + b.voltage_fractional:.2f}V"
+                        if (
+                            getattr(b, "voltage_coarse", None) is not None
+                            and getattr(b, "voltage_fractional", None) is not None
+                        )
+                        else "N/A"
+                    )
+                    active_slots.append(f"[Slot {idx} ({b_sys.name}): {b_status_str}, {b_volt}]")
+
+            if active_slots:
+                _logger.debug(f"All active battery states ({len(active_slots)}): {', '.join(active_slots)}")
+            else:
+                _logger.debug("All active battery states: none recorded yet")
+
+        if self._on_battery_callback is not None:
             self._on_battery_callback(dataclasses.replace(data))
 
     def on_data(self, data: list[int]) -> None:
