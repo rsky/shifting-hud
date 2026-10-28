@@ -1,11 +1,8 @@
-from __future__ import annotations
-
 import argparse
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QImage
@@ -18,7 +15,7 @@ from settings import load_settings
 _logger = logging.getLogger(__name__)
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Capture HUD screenshot with demo/dummy data")
     parser.add_argument(
         "-s",
@@ -52,7 +49,7 @@ def capture_screenshot(window: ShiftingHudWindow, output_path: Path) -> bool:
     return image.save(str(output_path))
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 

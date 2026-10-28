@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 import json
 import logging
 import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 _logger = logging.getLogger(__name__)
 
@@ -15,8 +13,8 @@ MAX_ANT_ID = 0xFFFF  # 65535 (16-bit unsigned integer)
 
 @dataclass(frozen=True)
 class TeethSettings:
-    front: Optional[list[float]] = None
-    rear: Optional[list[float]] = None
+    front: list[float] | None = None
+    rear: list[float] | None = None
 
     def __post_init__(self) -> None:
         if self.front is not None:
@@ -28,9 +26,9 @@ class TeethSettings:
 @dataclass(frozen=True)
 class AppSettings:
     ant_id: int
-    teeth: Optional[TeethSettings] = None
+    teeth: TeethSettings | None = None
 
-    def calculate_gear_ratio(self, gear_front: Optional[int], gear_rear: Optional[int]) -> Optional[float]:
+    def calculate_gear_ratio(self, gear_front: int | None, gear_rear: int | None) -> float | None:
         """
         Calculate gear ratio: teeth.front[current_front] / teeth.rear[current_rear].
 
@@ -78,14 +76,14 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
     if not _is_valid_number(ant_id_raw) or int(ant_id_raw) != ant_id_raw or not (0 <= int(ant_id_raw) <= MAX_ANT_ID):
         raise ValueError(f"'antID' must be an integer between 0 and {MAX_ANT_ID}")
 
-    teeth_settings: Optional[TeethSettings] = None
+    teeth_settings: TeethSettings | None = None
     if "teeth" in raw and raw["teeth"] is not None:
         teeth_raw = raw["teeth"]
         if not isinstance(teeth_raw, dict):
             raise ValueError("'teeth' must be an object")
 
-        front_list: Optional[list[float]] = None
-        rear_list: Optional[list[float]] = None
+        front_list: list[float] | None = None
+        rear_list: list[float] | None = None
 
         if "front" in teeth_raw and teeth_raw["front"] is not None:
             if not isinstance(teeth_raw["front"], list) or not all(
@@ -106,7 +104,7 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
     return AppSettings(ant_id=int(ant_id_raw), teeth=teeth_settings)
 
 
-def resolve_settings_path(path: Optional[Path] = None) -> Path:
+def resolve_settings_path(path: Path | None = None) -> Path:
     """
     Resolve path to settings.json, supporting both standard Python execution
     and PyInstaller frozen executables.
@@ -135,7 +133,7 @@ def resolve_settings_path(path: Optional[Path] = None) -> Path:
     return candidates[1] if len(candidates) > 1 else candidates[0]
 
 
-def load_settings(path: Optional[Path] = None) -> AppSettings:
+def load_settings(path: Path | None = None) -> AppSettings:
     """
     Load and validate settings.json.
     If path is not explicitly specified and settings.json does not exist,

@@ -26,8 +26,8 @@ ______________________________________________________________________
 
 ## セットアップ
 
-受信には ANT+ 対応 USB ドングル（ANTUSB2 / ANTUSB-m 等）が必要です。
-また、Python 仮想環境（[venv](https://docs.python.org/ja/dev/library/venv.html)）の利用を推奨します。
+動作環境として **Python 3.13 以降** が必要です。また、受信には ANT+ 対応 USB ドングル（ANTUSB2 / ANTUSB-m 等）が必要です。
+Python 仮想環境（[venv](https://docs.python.org/ja/dev/library/venv.html)）の利用を推奨します。
 
 ### 1. 仮想環境の作成と有効化
 

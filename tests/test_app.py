@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-import os
+import contextlib
 import sys
 import tempfile
 from pathlib import Path
@@ -108,16 +106,15 @@ def test_resolve_settings_path_pyinstaller() -> None:
 
         other_cwd = tmp_path / "other_cwd"
         other_cwd.mkdir()
-        old_cwd = Path.cwd()
-        try:
-            os.chdir(other_cwd)
-            with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(fake_exe)):
-                resolved = settings_mod.resolve_settings_path()
-                assert resolved == fake_settings
-                loaded = settings_mod.load_settings()
-                assert loaded.ant_id == 42
-        finally:
-            os.chdir(old_cwd)
+        with (
+            contextlib.chdir(other_cwd),
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "executable", str(fake_exe)),
+        ):
+            resolved = settings_mod.resolve_settings_path()
+            assert resolved == fake_settings
+            loaded = settings_mod.load_settings()
+            assert loaded.ant_id == 42
 
 
 def test_load_settings_default_when_missing() -> None:

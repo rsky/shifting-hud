@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 import dataclasses
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from openant.devices import ANTPLUS_NETWORK_KEY
 from openant.devices.common import BatteryData
@@ -30,12 +28,12 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         device_id: int = 0,
         name: str = "shifting",
         trans_type: int = 0,
-        on_shift_callback: Optional[Callable[[ShiftData], None]] = None,
-        on_battery_callback: Optional[Callable[[BatteryData], None]] = None,
+        on_shift_callback: Callable[[ShiftData], None] | None = None,
+        on_battery_callback: Callable[[BatteryData], None] | None = None,
     ):
         self._on_shift_callback = on_shift_callback
         self._on_battery_callback = on_battery_callback
-        self.last_rx_time: Optional[float] = None
+        self.last_rx_time: float | None = None
         super().__init__(
             node=node,
             device_id=device_id,
@@ -92,7 +90,7 @@ class AntShiftingWorker:
         ant_id: int,
         on_shift: Callable[[ShiftData], None],
         on_battery: Callable[[BatteryData], None],
-        on_connection_lost: Optional[Callable[[], None]] = None,
+        on_connection_lost: Callable[[], None] | None = None,
         inactivity_timeout: float = DEFAULT_INACTIVITY_TIMEOUT,
     ):
         self.ant_id = ant_id
@@ -101,12 +99,12 @@ class AntShiftingWorker:
         self._on_connection_lost = on_connection_lost
         self._inactivity_timeout = inactivity_timeout
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._watchdog_thread: Optional[threading.Thread] = None
-        self._node: Optional[Node] = None
-        self._device: Optional[HudShiftingDevice] = None
+        self._thread: threading.Thread | None = None
+        self._watchdog_thread: threading.Thread | None = None
+        self._node: Node | None = None
+        self._device: HudShiftingDevice | None = None
         self._lock = threading.Lock()
-        self._last_error_msg: Optional[str] = None
+        self._last_error_msg: str | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -142,7 +140,7 @@ class AntShiftingWorker:
         if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
             self._watchdog_thread.join(timeout=1.0)
 
-    def check_inactivity(self, now: Optional[float] = None) -> bool:
+    def check_inactivity(self, now: float | None = None) -> bool:
         """
         Check if data reception has timed out due to sensor sleep or range loss.
         Returns True if inactivity timeout was triggered.
@@ -177,8 +175,8 @@ class AntShiftingWorker:
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
-            node: Optional[Node] = None
-            device: Optional[HudShiftingDevice] = None
+            node: Node | None = None
+            device: HudShiftingDevice | None = None
             connected = False
             try:
                 node = Node()

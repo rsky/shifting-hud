@@ -1,7 +1,7 @@
 [project]
 name = "shifting-hud"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 license = { text = "MIT" }
 authors = [
     { name = "Ryusuke SEKIYAMA", email = "rsky0711@gmail.com" },
@@ -27,13 +27,15 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 119
+target-version = "py313"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "UP"]
 ignore = ["E203", "E501"]
 
 [tool.mypy]
 strict = true
+python_version = "3.13"
 
 [[tool.mypy.overrides]]
 module = ["openant.*"]

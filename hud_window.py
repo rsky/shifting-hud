@@ -1,8 +1,5 @@
-from __future__ import annotations
-
 import sys
 from pathlib import Path
-from typing import Optional
 
 from openant.devices.common import BatteryData, BatteryStatus
 from openant.devices.shift import ShiftData, ShiftingSystemID
@@ -49,6 +46,8 @@ BATTERY_ICON_CROP_RECT = QRect(0, 8, 48, 32)
 BATTERY_ICON_SIZE = QSize(24, 16)
 BATTERY_ICON_DPR = 2.0
 
+type BatteryStatusMap = dict[str, BatteryStatus | None]
+
 # Battery icons are from Akar Icons (https://akaricons.com/), licensed under MIT License.
 BATTERY_ICON_FILES: dict[BatteryStatus, str] = {
     BatteryStatus.New: "akar-icons--battery-full@2x.png",
@@ -60,7 +59,7 @@ BATTERY_ICON_FILES: dict[BatteryStatus, str] = {
 }
 
 
-def resolve_icons_dir(icons_dir: Optional[Path] = None) -> Path:
+def resolve_icons_dir(icons_dir: Path | None = None) -> Path:
     """
     Resolve path to the icons directory, supporting both standard Python execution
     and PyInstaller frozen executables (bundled via --add-data or external directory).
@@ -92,7 +91,7 @@ def resolve_icons_dir(icons_dir: Optional[Path] = None) -> Path:
     return candidates[0]
 
 
-def load_battery_icons(icons_dir: Optional[Path] = None) -> dict[BatteryStatus, QPixmap]:
+def load_battery_icons(icons_dir: Path | None = None) -> dict[BatteryStatus, QPixmap]:
     """Load and crop @2x icons (48x48 -> 48x32) with devicePixelRatio=2.0 (logical 24x16)."""
     resolved_dir = resolve_icons_dir(icons_dir)
     pixmap_cache: dict[str, QPixmap] = {}
@@ -110,7 +109,7 @@ def load_battery_icons(icons_dir: Optional[Path] = None) -> dict[BatteryStatus, 
     return icons
 
 
-def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, Optional[int]]:
+def format_gear_text(gear: int, total: int, invalid_value: int) -> tuple[str, int | None]:
     """
     Format gear text as '<current>/<total>' or '--' when unknown/invalid.
     Returns (formatted_text, valid_current_gear_or_None).
@@ -173,14 +172,12 @@ class ShiftingHudWindow(QWidget):
     )
     DIVIDER_STYLE = "background-color: rgba(255, 255, 255, 40); border: none;"
 
-    def __init__(self, settings: AppSettings, parent: Optional[QWidget] = None):
+    def __init__(self, settings: AppSettings, parent: QWidget | None = None):
         super().__init__(parent)
         self.settings = settings
-        self._drag_offset: Optional[QPoint] = None
+        self._drag_offset: QPoint | None = None
         self._battery_icons = load_battery_icons()
-        self.battery_statuses: dict[str, Optional[BatteryStatus]] = {
-            key: None for key in BATTERY_COMPONENT_KEYS.values()
-        }
+        self.battery_statuses: BatteryStatusMap = {key: None for key in BATTERY_COMPONENT_KEYS.values()}
 
         self.setWindowTitle("Shifting HUD")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
@@ -269,7 +266,7 @@ class ShiftingHudWindow(QWidget):
         layout.addWidget(value_label)
         return container, value_label
 
-    def _set_battery_label(self, component_key: str, status: Optional[BatteryStatus]) -> None:
+    def _set_battery_label(self, component_key: str, status: BatteryStatus | None) -> None:
         label = self.battery_value_labels[component_key]
         pixmap = self._battery_icons.get(status) if status is not None else None
         if pixmap is not None and not pixmap.isNull():

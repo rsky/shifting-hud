@@ -1,11 +1,8 @@
-from __future__ import annotations
-
 import argparse
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 from openant.devices.common import BatteryData, BatteryStatus
 from openant.devices.shift import ShiftData, ShiftingSystemID
@@ -18,7 +15,7 @@ from settings import load_settings
 _logger = logging.getLogger(__name__)
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ANT+ Shifting (Di2 / AXS) HUD Desktop Application")
     parser.add_argument(
         "-s",
@@ -72,7 +69,7 @@ def apply_demo_data(window: ShiftingHudWindow) -> None:
     window.update_battery_data(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.Ok))
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
