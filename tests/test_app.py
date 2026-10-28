@@ -135,6 +135,38 @@ def test_load_settings_default_when_missing() -> None:
             settings_mod.load_settings(missing_file)
 
 
+def test_resolve_icons_dir_pyinstaller() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir).resolve()
+        meipass_dir = tmp_path / "_MEI12345"
+        meipass_icons = meipass_dir / "icons"
+        meipass_icons.mkdir(parents=True)
+
+        exe_dir = tmp_path / "dist"
+        exe_dir.mkdir()
+        fake_exe = exe_dir / "shifting-hud.exe"
+        fake_exe.touch()
+        exe_icons = exe_dir / "icons"
+        exe_icons.mkdir()
+
+        # When both _MEIPASS/icons and exe_dir/icons exist, _MEIPASS/icons takes priority
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "_MEIPASS", str(meipass_dir), create=True),
+            patch.object(sys, "executable", str(fake_exe)),
+        ):
+            assert hud_window.resolve_icons_dir() == meipass_icons
+
+        # When _MEIPASS has no icons dir, falls back to exe_dir/icons
+        meipass_icons.rmdir()
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(sys, "_MEIPASS", str(meipass_dir), create=True),
+            patch.object(sys, "executable", str(fake_exe)),
+        ):
+            assert hud_window.resolve_icons_dir() == exe_icons
+
+
 def test_hud_shifting_device_packets() -> None:
     mock_node = MagicMock()
     mock_channel = MagicMock()

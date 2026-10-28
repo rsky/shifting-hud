@@ -1,4 +1,6 @@
 /.venv
+/build/
+/dist/
 /settings.json
 /settings_*.json
 __pycache__/

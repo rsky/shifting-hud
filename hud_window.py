@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -59,13 +60,46 @@ BATTERY_ICON_FILES: dict[BatteryStatus, str] = {
 }
 
 
-def load_battery_icons(icons_dir: Path = ICONS_DIR) -> dict[BatteryStatus, QPixmap]:
+def resolve_icons_dir(icons_dir: Optional[Path] = None) -> Path:
+    """
+    Resolve path to the icons directory, supporting both standard Python execution
+    and PyInstaller frozen executables (bundled via --add-data or external directory).
+    """
+    if icons_dir is not None:
+        return icons_dir
+
+    candidates: list[Path] = []
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass).resolve() / "icons")
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "icons")
+        # Support macOS .app bundle (App.app/Contents/MacOS/executable)
+        if exe_dir.name == "MacOS" and exe_dir.parent.name == "Contents":
+            candidates.append(exe_dir.parent / "Resources" / "icons")
+            candidates.append(exe_dir.parent.parent.parent / "icons")
+    else:
+        candidates.append(ICONS_DIR)
+
+    candidates.append(Path.cwd() / "icons")
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+
+    return candidates[0]
+
+
+def load_battery_icons(icons_dir: Optional[Path] = None) -> dict[BatteryStatus, QPixmap]:
     """Load and crop @2x icons (48x48 -> 48x32) with devicePixelRatio=2.0 (logical 24x16)."""
+    resolved_dir = resolve_icons_dir(icons_dir)
     pixmap_cache: dict[str, QPixmap] = {}
     icons: dict[BatteryStatus, QPixmap] = {}
     for status, filename in BATTERY_ICON_FILES.items():
         if filename not in pixmap_cache:
-            img = QImage(str(icons_dir / filename))
+            img = QImage(str(resolved_dir / filename))
             if not img.isNull():
                 cropped = img.copy(BATTERY_ICON_CROP_RECT)
                 pixmap = QPixmap.fromImage(cropped)
