@@ -222,7 +222,7 @@ class ShiftingHudWindow(QWidget):
         layout.setContentsMargins(2, 0, 2, 0)
         layout.setSpacing(4)
 
-        title_label = QLabel(f"{title}:", container)
+        title_label = QLabel(title, container)
         title_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         title_label.setStyleSheet(self.SUB_TITLE_STYLE)
 
