@@ -70,12 +70,41 @@ def test_settings_front_single_and_no_teeth() -> None:
     no_teeth_cfg = settings_mod.validate_and_parse_settings({"antID": 999})
     assert no_teeth_cfg.calculate_gear_ratio(1, 1) is None
 
+    empty_cfg = settings_mod.validate_and_parse_settings({})
+    assert empty_cfg.ant_id == 0
+    assert empty_cfg.teeth is None
+    assert empty_cfg.battery_status == settings_mod.BatteryStatusSettings(
+        shifters=False,
+        front_derailleur=True,
+        rear_derailleur=True,
+        power_meter=False,
+        power_meter_id=0,
+    )
+
+    custom_bs_cfg = settings_mod.validate_and_parse_settings(
+        {
+            "batteryStatus": {
+                "shifters": True,
+                "frontDerailleur": False,
+                "rearDerailleur": True,
+                "powerMeter": True,
+                "powerMeterID": 54321,
+            }
+        }
+    )
+    assert custom_bs_cfg.ant_id == 0
+    assert custom_bs_cfg.battery_status.shifters is True
+    assert custom_bs_cfg.battery_status.front_derailleur is False
+    assert custom_bs_cfg.battery_status.rear_derailleur is True
+    assert custom_bs_cfg.battery_status.power_meter is True
+    assert custom_bs_cfg.battery_status.power_meter_id == 54321
+
 
 @pytest.mark.parametrize(
     "invalid_payload",
     [
         "not_a_dict",
-        {},
+        {"antID": None},
         {"antID": -1},
         {"antID": 70000},
         {"antID": True},
@@ -88,6 +117,15 @@ def test_settings_front_single_and_no_teeth() -> None:
         {"antID": float("nan")},
         {"antID": 0, "teeth": {"front": [float("inf")]}},
         {"antID": 0, "teeth": {"rear": [float("nan")]}},
+        {"batteryStatus": "invalid"},
+        {"batteryStatus": {"shifters": 1}},
+        {"batteryStatus": {"frontDerailleur": "true"}},
+        {"batteryStatus": {"rearDerailleur": None}},
+        {"batteryStatus": {"powerMeter": 0}},
+        {"batteryStatus": {"powerMeterID": -1}},
+        {"batteryStatus": {"powerMeterID": 70000}},
+        {"batteryStatus": {"powerMeterID": True}},
+        {"batteryStatus": {"powerMeterID": 1.5}},
     ],
 )
 def test_settings_validation_errors(invalid_payload: Any) -> None:
@@ -427,6 +465,8 @@ def test_demo_mode_and_apply_demo_data(qapp: QApplication) -> None:
     assert not win_2x.battery_value_labels["L"].pixmap().isNull()
     assert win_2x.battery_statuses["FD"] == BatteryStatus.New
     assert not win_2x.battery_value_labels["FD"].pixmap().isNull()
+    assert win_2x.battery_statuses["PM"] == BatteryStatus.Low
+    assert not win_2x.battery_value_labels["PM"].pixmap().isNull()
     win_2x.close()
 
     # 1x setup
@@ -466,15 +506,17 @@ def test_battery_icon_mapping(qapp: QApplication) -> None:
 
     # Statuses mapped to icons
     for status in hud_window.BATTERY_ICON_FILES:
+        src_pix = win._battery_icons[status]
+        assert src_pix.devicePixelRatio() == hud_window.BATTERY_ICON_DPR
+        assert src_pix.size() == hud_window.BATTERY_ICON_CROP_RECT.size()
+
         win.update_battery_data(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=status))
         qapp.processEvents()
         assert win.battery_statuses["RD"] == status
         pix = win.battery_value_labels["RD"].pixmap()
         assert not pix.isNull()
-        assert pix.devicePixelRatio() == hud_window.BATTERY_ICON_DPR
-        assert pix.size() == hud_window.BATTERY_ICON_CROP_RECT.size()
+        assert pix.deviceIndependentSize().toSize() == hud_window.BATTERY_ICON_SIZE
         assert win.battery_value_labels["RD"].sizeHint() == hud_window.BATTERY_ICON_SIZE
-        assert pix.cacheKey() == win._battery_icons[status].cacheKey()
 
     # Differential update: repeating identical BatteryData should not trigger adjustSize()
     with patch.object(win, "adjustSize") as mock_adjust:
@@ -606,3 +648,165 @@ def test_apply_usb_fixes_idempotent() -> None:
     matching_filters = [f for f in openant_logger.filters if isinstance(f, ant_worker.OpenantTimeoutWarningFilter)]
     assert len(matching_filters) == 1
 
+
+def test_hud_power_meter_device_packets_and_discovery() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    received_batteries: list[BatteryData] = []
+    pm = ant_worker.HudPowerMeterDevice(
+        mock_node,
+        device_id=0,
+        on_battery_callback=received_batteries.append,
+    )
+    assert pm.device_id == 0
+
+    # Non-extended packet ignored while device_id == 0
+    pm._on_data([82, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x23])
+    assert pm.device_id == 0
+    assert len(received_batteries) == 0
+
+    # Extended standard power packet (Page 0x10) discovers device_id = 0x5678 (22136)
+    ext_power_pkt = [0x10, 0x01, 0xFF, 90, 0x00, 0x01, 200, 0x00, 0x80, 0x78, 0x56, 0x0B, 0x05]
+    pm._on_data(ext_power_pkt)
+    assert pm.device_id == 0x5678
+    assert pm.trans_type == 0x05
+    assert pm._attached is True
+    assert pm.last_rx_time is not None
+
+    # Common Page 82 with battery_id = 0xFF (single battery), status = Good (2)
+    pm._on_data([82, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x80, 0x23])
+    assert len(received_batteries) == 1
+    assert received_batteries[-1].status == BatteryStatus.Good
+    assert received_batteries[-1] is not pm.data["common"].last_battery_data
+
+    # Packet from another power meter device_id (0x1111) is ignored
+    other_ext_pkt = [82, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x80, 0x43, 0x80, 0x11, 0x11, 0x0B, 0x05]
+    pm._on_data(other_ext_pkt)
+    assert len(received_batteries) == 1
+
+
+def test_worker_power_meter_discovery_and_watchdog() -> None:
+    shift_lost = 0
+    pm_lost = 0
+
+    def on_shift_lost() -> None:
+        nonlocal shift_lost
+        shift_lost += 1
+
+    def on_pm_lost() -> None:
+        nonlocal pm_lost
+        pm_lost += 1
+
+    worker = ant_worker.AntShiftingWorker(
+        ant_id=0,
+        on_shift=lambda _: None,
+        on_battery=lambda _: None,
+        on_connection_lost=on_shift_lost,
+        inactivity_timeout=10.0,
+        power_meter_id=0,
+        on_power_meter_battery=lambda _: None,
+        on_power_meter_connection_lost=on_pm_lost,
+    )
+    assert worker.active_power_meter_id == 0
+    assert worker.poll_power_meter_discovery() is None
+
+    mock_shift_dev = MagicMock()
+    mock_shift_dev.device_id = 0
+    mock_shift_dev.last_rx_time = 100.0
+    mock_pm_dev = MagicMock()
+    mock_pm_dev.device_id = 22222
+    mock_pm_dev.last_rx_time = 95.0
+    mock_node = MagicMock()
+
+    worker._device = mock_shift_dev
+    worker._power_meter_device = mock_pm_dev
+    worker._node = mock_node
+
+    # PowerMeter discovery locks onto 22222
+    assert worker.poll_power_meter_discovery() == 22222
+    assert worker.active_power_meter_id == 22222
+
+    # At t=106.0: PM timed out (106 - 95 = 11 >= 10), but Shifting is still active (106 - 100 = 6 < 10)
+    assert worker.check_inactivity(now=106.0)
+    assert pm_lost == 1
+    assert shift_lost == 0
+    assert mock_pm_dev.last_rx_time is None
+    assert mock_node.stop.call_count == 0
+
+    # At t=110.0: Shifting also times out -> node.stop() is called
+    assert worker.check_inactivity(now=110.0)
+    assert shift_lost == 1
+    assert mock_node.stop.call_count == 1
+
+
+def test_hud_window_battery_visibility_and_pm(qapp: QApplication) -> None:
+    # 1. Default batteryStatus: shifters=False, frontDerailleur=True, rearDerailleur=True, powerMeter=False
+    default_cfg = settings_mod.validate_and_parse_settings({})
+    win_default = hud_window.ShiftingHudWindow(default_cfg)
+    win_default.show()
+    qapp.processEvents()
+
+    assert not win_default.battery_blocks["L"].isVisible()
+    assert not win_default.battery_blocks["R"].isVisible()
+    assert win_default.battery_blocks["FD"].isVisible()
+    assert win_default.battery_blocks["RD"].isVisible()
+    assert not win_default.battery_blocks["PM"].isVisible()
+    assert win_default.divider.isVisible()
+    win_default.close()
+
+    # 2. All battery components enabled (including PM)
+    all_cfg = settings_mod.validate_and_parse_settings(
+        {
+            "batteryStatus": {
+                "shifters": True,
+                "frontDerailleur": True,
+                "rearDerailleur": True,
+                "powerMeter": True,
+                "powerMeterID": 1234,
+            }
+        }
+    )
+    win_all = hud_window.ShiftingHudWindow(all_cfg)
+    win_all.show()
+    qapp.processEvents()
+
+    for key in ("L", "R", "FD", "RD", "PM"):
+        assert win_all.battery_blocks[key].isVisible()
+        assert win_all.battery_value_labels[key].text() == "--"
+
+    # Verify PM is positioned to the right of RD
+    assert win_all.battery_blocks["PM"].x() > win_all.battery_blocks["RD"].x()
+
+    # Update PM battery status
+    win_all.update_power_meter_battery_data(BatteryData(battery_id=0xFF, status=BatteryStatus.Low))
+    qapp.processEvents()
+    assert win_all.battery_statuses["PM"] == BatteryStatus.Low
+    assert not win_all.battery_value_labels["PM"].pixmap().isNull()
+
+    # Reset PM display only
+    win_all.reset_power_meter_display()
+    qapp.processEvents()
+    assert win_all.battery_statuses["PM"] is None
+    assert win_all.battery_value_labels["PM"].text() == "--"
+    win_all.close()
+
+    # 3. All battery components disabled -> divider hidden
+    none_cfg = settings_mod.validate_and_parse_settings(
+        {
+            "batteryStatus": {
+                "shifters": False,
+                "frontDerailleur": False,
+                "rearDerailleur": False,
+                "powerMeter": False,
+            }
+        }
+    )
+    win_none = hud_window.ShiftingHudWindow(none_cfg)
+    win_none.show()
+    qapp.processEvents()
+    for key in ("L", "R", "FD", "RD", "PM"):
+        assert not win_none.battery_blocks[key].isVisible()
+    assert not win_none.divider.isVisible()
+    win_none.close()

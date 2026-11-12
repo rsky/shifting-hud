@@ -67,6 +67,7 @@ def apply_demo_data(window: ShiftingHudWindow) -> None:
             BatteryData(battery_id=ShiftingSystemID.FrontDerailleur.value, status=BatteryStatus.New)
         )
     window.update_battery_data(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.Ok))
+    window.update_power_meter_battery_data(BatteryData(status=BatteryStatus.Low))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -93,13 +94,20 @@ def main(argv: list[str] | None = None) -> int:
     bridge = AntShiftingBridge()
     bridge.shift_data_received.connect(window.update_shift_data)
     bridge.battery_data_received.connect(window.update_battery_data)
+    bridge.power_meter_battery_received.connect(window.update_power_meter_battery_data)
     bridge.connection_lost.connect(window.reset_display)
+    bridge.power_meter_connection_lost.connect(window.reset_power_meter_display)
+
+    power_meter_id = settings.battery_status.power_meter_id if settings.battery_status.power_meter else None
 
     worker = AntShiftingWorker(
         ant_id=settings.ant_id,
         on_shift=bridge.shift_data_received.emit,
         on_battery=bridge.battery_data_received.emit,
         on_connection_lost=bridge.connection_lost.emit,
+        power_meter_id=power_meter_id,
+        on_power_meter_battery=bridge.power_meter_battery_received.emit,
+        on_power_meter_connection_lost=bridge.power_meter_connection_lost.emit,
     )
     app.aboutToQuit.connect(worker.stop)
 

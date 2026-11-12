@@ -2,13 +2,22 @@ import json
 import logging
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger(__name__)
 
 MAX_ANT_ID = 0xFFFF  # 65535 (16-bit unsigned integer)
+
+
+@dataclass(frozen=True)
+class BatteryStatusSettings:
+    shifters: bool = False
+    front_derailleur: bool = True
+    rear_derailleur: bool = True
+    power_meter: bool = False
+    power_meter_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -25,8 +34,9 @@ class TeethSettings:
 
 @dataclass(frozen=True)
 class AppSettings:
-    ant_id: int
+    ant_id: int = 0
     teeth: TeethSettings | None = None
+    battery_status: BatteryStatusSettings = field(default_factory=BatteryStatusSettings)
 
     def calculate_gear_ratio(self, gear_front: int | None, gear_rear: int | None) -> float | None:
         """
@@ -62,6 +72,21 @@ def _is_valid_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
+def _parse_ant_id(value: Any, name: str) -> int:
+    if not _is_valid_number(value) or int(value) != value or not (0 <= int(value) <= MAX_ANT_ID):
+        raise ValueError(f"'{name}' must be an integer between 0 and {MAX_ANT_ID}")
+    return int(value)
+
+
+def _parse_bool_field(raw_obj: dict[str, Any], key: str, default: bool, prefix: str = "batteryStatus") -> bool:
+    if key not in raw_obj:
+        return default
+    value = raw_obj[key]
+    if not isinstance(value, bool):
+        raise ValueError(f"'{prefix}.{key}' must be a boolean")
+    return value
+
+
 def _parse_teeth_list(teeth_raw: dict[str, Any], key: str) -> list[float] | None:
     value = teeth_raw.get(key)
     if value is None:
@@ -76,12 +101,24 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
     if not isinstance(raw, dict):
         raise ValueError("settings.json must be a JSON object")
 
-    if "antID" not in raw:
-        raise ValueError("Missing required property 'antID' in settings.json")
+    ant_id = _parse_ant_id(raw["antID"], "antID") if "antID" in raw else 0
 
-    ant_id_raw = raw["antID"]
-    if not _is_valid_number(ant_id_raw) or int(ant_id_raw) != ant_id_raw or not (0 <= int(ant_id_raw) <= MAX_ANT_ID):
-        raise ValueError(f"'antID' must be an integer between 0 and {MAX_ANT_ID}")
+    battery_status = BatteryStatusSettings()
+    if "batteryStatus" in raw and raw["batteryStatus"] is not None:
+        bs_raw = raw["batteryStatus"]
+        if not isinstance(bs_raw, dict):
+            raise ValueError("'batteryStatus' must be an object")
+
+        power_meter_id = (
+            _parse_ant_id(bs_raw["powerMeterID"], "batteryStatus.powerMeterID") if "powerMeterID" in bs_raw else 0
+        )
+        battery_status = BatteryStatusSettings(
+            shifters=_parse_bool_field(bs_raw, "shifters", False),
+            front_derailleur=_parse_bool_field(bs_raw, "frontDerailleur", True),
+            rear_derailleur=_parse_bool_field(bs_raw, "rearDerailleur", True),
+            power_meter=_parse_bool_field(bs_raw, "powerMeter", False),
+            power_meter_id=power_meter_id,
+        )
 
     teeth_settings: TeethSettings | None = None
     if "teeth" in raw and raw["teeth"] is not None:
@@ -94,7 +131,7 @@ def validate_and_parse_settings(raw: Any) -> AppSettings:
             rear=_parse_teeth_list(teeth_raw, "rear"),
         )
 
-    return AppSettings(ant_id=int(ant_id_raw), teeth=teeth_settings)
+    return AppSettings(ant_id=ant_id, teeth=teeth_settings, battery_status=battery_status)
 
 
 def resolve_settings_path(path: Path | None = None) -> Path:
