@@ -40,6 +40,8 @@ BATTERY_COMPONENT_KEYS = {
     ShiftingSystemID.FrontDerailleur: "FD",
     ShiftingSystemID.RearDerailleur: "RD",
 }
+POWER_METER_BATTERY_KEY = "PM"
+ALL_BATTERY_KEYS = (*BATTERY_COMPONENT_KEYS.values(), POWER_METER_BATTERY_KEY)
 
 INITIAL_VALUE = "--"
 
@@ -126,7 +128,9 @@ class AntShiftingBridge(QObject):
 
     shift_data_received = Signal(object)  # ShiftData
     battery_data_received = Signal(object)  # BatteryData
+    power_meter_battery_received = Signal(object)  # BatteryData
     connection_lost = Signal()
+    power_meter_connection_lost = Signal()
 
 
 class ShiftingHudWindow(QWidget):
@@ -179,7 +183,7 @@ class ShiftingHudWindow(QWidget):
         self.settings = settings
         self._drag_offset: QPoint | None = None
         self._battery_icons = load_battery_icons()
-        self.battery_statuses: BatteryStatusMap = {key: None for key in BATTERY_COMPONENT_KEYS.values()}
+        self.battery_statuses: BatteryStatusMap = {key: None for key in ALL_BATTERY_KEYS}
 
         self.setWindowTitle("Shifting HUD")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
@@ -187,6 +191,18 @@ class ShiftingHudWindow(QWidget):
 
         self._init_ui()
         self._init_shortcuts()
+
+    def _is_battery_key_enabled(self, key: str) -> bool:
+        bs = self.settings.battery_status
+        if key in ("L", "R"):
+            return bs.shifters
+        if key == "FD":
+            return bs.front_derailleur
+        if key == "RD":
+            return bs.rear_derailleur
+        if key == POWER_METER_BATTERY_KEY:
+            return bs.power_meter
+        return False
 
     def _init_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -209,24 +225,34 @@ class ShiftingHudWindow(QWidget):
         main_layout.addWidget(self.ratio_block)
 
         # Subtle divider line between main and sub content
-        divider = QFrame(self)
-        divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setFixedHeight(1)
-        divider.setStyleSheet(self.DIVIDER_STYLE)
+        self.divider = QFrame(self)
+        self.divider.setFrameShape(QFrame.Shape.HLine)
+        self.divider.setFixedHeight(1)
+        self.divider.setStyleSheet(self.DIVIDER_STYLE)
 
-        # --- Sub Content (Batteries: L, R, FD, RD) ---
+        # --- Sub Content (Batteries: L, R, FD, RD, PM) ---
         sub_layout = QHBoxLayout()
         sub_layout.setContentsMargins(0, 0, 0, 0)
         sub_layout.setSpacing(16)
 
+        self.battery_blocks: dict[str, QWidget] = {}
         self.battery_value_labels: dict[str, QLabel] = {}
-        for key in BATTERY_COMPONENT_KEYS.values():
+        any_battery_enabled = False
+        for key in ALL_BATTERY_KEYS:
             block, val_label = self._create_sub_metric_block(key, INITIAL_VALUE)
+            if not self._is_battery_key_enabled(key):
+                block.setVisible(False)
+            else:
+                any_battery_enabled = True
+            self.battery_blocks[key] = block
             self.battery_value_labels[key] = val_label
             sub_layout.addWidget(block)
 
+        if not any_battery_enabled:
+            self.divider.setVisible(False)
+
         root_layout.addLayout(main_layout)
-        root_layout.addWidget(divider)
+        root_layout.addWidget(self.divider)
         root_layout.addLayout(sub_layout)
 
     def _create_main_metric_block(self, title: str, initial_value: str) -> tuple[QWidget, QLabel]:
@@ -297,6 +323,13 @@ class ShiftingHudWindow(QWidget):
             changed = True
         return changed
 
+    def _update_battery_component(self, component_key: str, status: BatteryStatus | None) -> bool:
+        if self.battery_statuses.get(component_key) == status:
+            return False
+        self.battery_statuses[component_key] = status
+        self._set_battery_label(component_key, status)
+        return True
+
     def reset_display(self) -> None:
         """Reset all HUD metrics to '--' when the connection is lost."""
         changed = (
@@ -304,12 +337,15 @@ class ShiftingHudWindow(QWidget):
             | self._update_metric_block(self.rear_value_label, INITIAL_VALUE)
             | self._update_metric_block(self.ratio_value_label, INITIAL_VALUE, self.ratio_block, False)
         )
-        for key, status in self.battery_statuses.items():
-            if status is not None:
-                self.battery_statuses[key] = None
-                self._set_battery_label(key, None)
-                changed = True
+        for key in self.battery_statuses:
+            changed |= self._update_battery_component(key, None)
         if changed:
+            self.adjustSize()
+            self.update()
+
+    def reset_power_meter_display(self) -> None:
+        """Reset power meter ('PM') battery metric to '--' when power meter connection is lost."""
+        if self._update_battery_component(POWER_METER_BATTERY_KEY, None):
             self.adjustSize()
             self.update()
 
@@ -341,7 +377,6 @@ class ShiftingHudWindow(QWidget):
         except ValueError:
             system_id = ShiftingSystemID.Unknown
         component_key = BATTERY_COMPONENT_KEYS.get(system_id)
-
         if _logger.isEnabledFor(logging.DEBUG):
             status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
             _logger.debug(
@@ -356,13 +391,15 @@ class ShiftingHudWindow(QWidget):
                 )
             return
 
-        if self.battery_statuses.get(component_key) == data.status:
-            return
+        if self._update_battery_component(component_key, data.status):
+            self.adjustSize()
+            self.update()
 
-        self.battery_statuses[component_key] = data.status
-        self._set_battery_label(component_key, data.status)
-        self.adjustSize()
-        self.update()
+    def update_power_meter_battery_data(self, data: BatteryData) -> None:
+        """Update PM battery display from power meter BatteryData (only redraws on change)."""
+        if self._update_battery_component(POWER_METER_BATTERY_KEY, data.status):
+            self.adjustSize()
+            self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         painter = QPainter(self)

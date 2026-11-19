@@ -10,6 +10,7 @@ from typing import Any
 from openant.base.message import Message
 from openant.devices import ANTPLUS_NETWORK_KEY
 from openant.devices.common import BatteryData, BatteryStatus
+from openant.devices.power_meter import PowerMeter
 from openant.devices.shift import ShiftData, Shifting, ShiftingSystemID
 from openant.easy.exception import TransferFailedException
 from openant.easy.node import Node
@@ -18,6 +19,8 @@ _logger = logging.getLogger(__name__)
 
 # ANT+ Shifting Profile (Device Type 0x22 / 34)
 SHIFTING_DEVICE_TYPE = 0x22  # 34
+# ANT+ Bicycle Power Profile (Device Type 0x0B / 11)
+POWER_METER_DEVICE_TYPE = 0x0B  # 11
 INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
 INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
 PAGE_REQUEST_DATA = 0x46  # 70 Request Data Page
@@ -182,32 +185,35 @@ def _format_battery_voltage(data: BatteryData) -> str:
     return "N/A"
 
 
-class HudShiftingDevice(Shifting):  # type: ignore[misc]
-    """
-    ANT+ Shifting device (Device Type 0x22 / 34) subclass that safely decodes
-    Page 1 (Shift System Status) and Common Page 82 (Battery Status).
-    """
+class _HudAntDeviceMixin:
+    """Common packet filtering, wildcard discovery, bidirectional channel setup, and Page 70 ACK TX for HUD ANT+ devices."""
 
-    def __init__(
+    device_id: int
+    trans_type: int
+    _attached: bool
+    last_rx_time: float | None
+    _on_battery_callback: Callable[[BatteryData], None] | None
+    node: Node | None
+    channel: Any
+    data: dict[str, Any]
+
+    def _init_hud_device(
         self,
         node: Node,
-        device_id: int = 0,
-        name: str = "shifting",
-        trans_type: int = 0,
-        on_shift_callback: Callable[[ShiftData], None] | None = None,
-        on_battery_callback: Callable[[BatteryData], None] | None = None,
-    ):
-        self._on_shift_callback = on_shift_callback
+        device_id: int,
+        name: str,
+        trans_type: int,
+        on_battery_callback: Callable[[BatteryData], None] | None,
+    ) -> None:
         self._on_battery_callback = on_battery_callback
-        self.last_rx_time: float | None = None
-        self.device_id: int = device_id
-        self.trans_type: int = trans_type
-        self._attached: bool = False
+        self.last_rx_time = None
+        self.device_id = device_id
+        self.trans_type = trans_type
+        self._attached = False
         self._received_battery_ids: set[int] = set()
-        self._rd_battery_requested: bool = False
         self._closing = threading.Event()
         self._request_thread: threading.Thread | None = None
-        super().__init__(
+        super().__init__(  # type: ignore[call-arg]
             node=node,
             device_id=device_id,
             name=name,
@@ -227,7 +233,7 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         openant's default ext_assign=0x01 enables Background Scanning (RX-only),
         which prevents acknowledged Page 70 requests from being transmitted.
         """
-        super().open_channel(extended=extended, channel_type=channel_type, ext_assign=ext_assign)
+        super().open_channel(extended=extended, channel_type=channel_type, ext_assign=ext_assign)  # type: ignore[misc]
 
     def _accept_packet(self, data: list[int]) -> bool:
         """
@@ -259,7 +265,7 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         return self.device_id != 0
 
     def _on_data(self, data: list[int]) -> None:
-        if not self._accept_packet(data):
+        if len(data) < STANDARD_PAYLOAD_LEN or not self._accept_packet(data):
             return
 
         if data and data[0] == BATTERY_STATUS_PAGE:
@@ -270,7 +276,7 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
             data = data[:STANDARD_PAYLOAD_LEN]
 
         self.last_rx_time = time.monotonic()
-        super()._on_data(data)
+        super()._on_data(data)  # type: ignore[misc]
 
     def close_channel(self) -> None:
         """Safely close and remove the device channel without triggering CHANNEL_IN_WRONG_STATE."""
@@ -328,31 +334,39 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         _logger.warning(f"Page 70 ACK request failed after {retries} attempts for component ID={component_id}")
         return False
 
-    def _request_shifter_batteries(self) -> None:
-        """Asynchronously request Left and Right shifter battery pages via acknowledged Page 70."""
+    def _request_battery_pages_async(
+        self,
+        component_ids: tuple[int | None, ...],
+        thread_name: str,
+    ) -> None:
+        """Asynchronously request Common Page 82 for each missing component via acknowledged Page 70."""
 
         def _worker() -> None:
-            left_id = ShiftingSystemID.LeftShifter.value
-            right_id = ShiftingSystemID.RightShifter.value
-            if left_id not in self._received_battery_ids and not self._closing.is_set():
-                self.request_battery_page(left_id)
-                if self._closing.wait(timeout=BATTERY_REQUEST_INTERVAL):
+            sent_any = False
+            for component_id in component_ids:
+                if self._closing.is_set():
                     return
-            if right_id not in self._received_battery_ids and not self._closing.is_set():
-                self.request_battery_page(right_id)
+                if component_id is None:
+                    if self._received_battery_ids:
+                        continue
+                elif component_id in self._received_battery_ids:
+                    continue
+                if sent_any and self._closing.wait(timeout=BATTERY_REQUEST_INTERVAL):
+                    return
+                self.request_battery_page(component_id)
+                sent_any = True
 
-        self._request_thread = threading.Thread(target=_worker, name="RequestShifterBattery", daemon=True)
+        self._request_thread = threading.Thread(target=_worker, name=thread_name, daemon=True)
         self._request_thread.start()
 
-    def on_device_data(self, page: int, page_name: str, data: ShiftData) -> None:
-        if page == SHIFT_STATUS_PAGE and isinstance(data, ShiftData) and self._on_shift_callback is not None:
-            self._on_shift_callback(dataclasses.replace(data))
+    def _format_battery_id_label(self, battery_id: int) -> str:
+        return "single" if battery_id == 0xFF else f"slot {battery_id}"
 
     def _log_battery_debug(self, data: BatteryData) -> None:
-        system_id = _resolve_shifting_system_id(data.battery_id)
+        id_label = self._format_battery_id_label(data.battery_id)
         status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
         _logger.debug(
-            f"Battery update: ID={data.battery_id} ({system_id.name}), status={status_name}, "
+            f"Battery update: ID={data.battery_id} ({id_label}), status={status_name}, "
             f"voltage={_format_battery_voltage(data)}, operating_time={data.operating_time}s"
         )
 
@@ -361,9 +375,9 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
         for idx, b in enumerate(batteries):
             b_status = getattr(b, "status", None)
             if b_status is not None and b_status != BatteryStatus.Invalid:
-                b_sys = _resolve_shifting_system_id(idx)
+                b_label = self._format_battery_id_label(idx)
                 b_status_str = b_status.name if hasattr(b_status, "name") else str(b_status)
-                active_slots.append(f"[Slot {idx} ({b_sys.name}): {b_status_str}, {_format_battery_voltage(b)}]")
+                active_slots.append(f"[Slot {idx} ({b_label}): {b_status_str}, {_format_battery_voltage(b)}]")
 
         if active_slots:
             _logger.debug(f"All active battery states ({len(active_slots)}): {', '.join(active_slots)}")
@@ -381,6 +395,52 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
 
         if self._on_battery_callback is not None:
             self._on_battery_callback(dataclasses.replace(data))
+
+
+class HudShiftingDevice(_HudAntDeviceMixin, Shifting):  # type: ignore[misc]
+    """
+    ANT+ Shifting device (Device Type 0x22 / 34) subclass that safely decodes
+    Page 1 (Shift System Status) and Common Page 82 (Battery Status).
+    """
+
+    def __init__(
+        self,
+        node: Node,
+        device_id: int = 0,
+        name: str = "shifting",
+        trans_type: int = 0,
+        on_shift_callback: Callable[[ShiftData], None] | None = None,
+        on_battery_callback: Callable[[BatteryData], None] | None = None,
+    ):
+        self._on_shift_callback = on_shift_callback
+        self._rd_battery_requested: bool = False
+        self._init_hud_device(
+            node=node,
+            device_id=device_id,
+            name=name,
+            trans_type=trans_type,
+            on_battery_callback=on_battery_callback,
+        )
+
+    def _format_battery_id_label(self, battery_id: int) -> str:
+        return str(_resolve_shifting_system_id(battery_id).name)
+
+    def _request_shifter_batteries(self) -> None:
+        """Asynchronously request Left and Right shifter battery pages via acknowledged Page 70."""
+        self._request_battery_pages_async(
+            (ShiftingSystemID.LeftShifter.value, ShiftingSystemID.RightShifter.value),
+            thread_name="RequestShifterBattery",
+        )
+
+    def on_device_data(self, page: int, page_name: str, data: ShiftData) -> None:
+        if page == SHIFT_STATUS_PAGE and isinstance(data, ShiftData) and self._on_shift_callback is not None:
+            self._on_shift_callback(dataclasses.replace(data))
+
+    def on_battery(self, data: BatteryData) -> None:
+        if not isinstance(data, BatteryData):
+            return
+
+        super().on_battery(data)
 
         # On initial reception of RearDerailleur battery, request shifter batteries if not yet received
         if data.battery_id == ShiftingSystemID.RearDerailleur.value and not self._rd_battery_requested:
@@ -425,8 +485,49 @@ class HudShiftingDevice(Shifting):  # type: ignore[misc]
             self.on_device_data(page, "shift_system_status", shift)
 
 
+class HudPowerMeterDevice(_HudAntDeviceMixin, PowerMeter):  # type: ignore[misc]
+    """
+    ANT+ Bicycle Power device (Device Type 0x0B / 11) subclass that safely decodes
+    Common Page 82 (Battery Status) and requests it via Page 70 if not yet received.
+    """
+
+    def __init__(
+        self,
+        node: Node,
+        device_id: int = 0,
+        name: str = "power_meter",
+        trans_type: int = 0,
+        on_battery_callback: Callable[[BatteryData], None] | None = None,
+    ):
+        self._battery_requested: bool = False
+        self._init_hud_device(
+            node=node,
+            device_id=device_id,
+            name=name,
+            trans_type=trans_type,
+            on_battery_callback=on_battery_callback,
+        )
+
+    def _request_power_meter_battery(self) -> None:
+        """Asynchronously request Common Page 82 (Battery Status) via acknowledged Page 70."""
+        self._request_battery_pages_async((None,), thread_name="RequestPowerMeterBattery")
+
+    def on_data(self, data: list[int]) -> None:
+        if not data:
+            return
+        page = data[0]
+        _logger.debug(f"{self} on_data page={page:#04x}: {data}")
+
+        if not self._battery_requested and not self._received_battery_ids:
+            self._battery_requested = True
+            _logger.info(
+                "First power meter data received and battery status is missing; requesting Page 82 via Page 70..."
+            )
+            self._request_power_meter_battery()
+
+
 class AntShiftingWorker:
-    """Background worker managing the openant Node, Shifting profile channel, discovery polling, and inactivity watchdog."""
+    """Background worker managing the openant Node, Shifting/PowerMeter profile channels, discovery polling, and inactivity watchdog."""
 
     def __init__(
         self,
@@ -436,13 +537,20 @@ class AntShiftingWorker:
         on_connection_lost: Callable[[], None] | None = None,
         inactivity_timeout: float = DEFAULT_INACTIVITY_TIMEOUT,
         discovery_poll_interval: float = DEFAULT_DISCOVERY_POLL_INTERVAL,
+        power_meter_id: int | None = None,
+        on_power_meter_battery: Callable[[BatteryData], None] | None = None,
+        on_power_meter_connection_lost: Callable[[], None] | None = None,
     ):
         apply_usb_fixes()
         self.ant_id = ant_id
         self._active_ant_id = ant_id
+        self.power_meter_id = power_meter_id
+        self._active_power_meter_id = power_meter_id
         self._on_shift = on_shift
         self._on_battery = on_battery
         self._on_connection_lost = on_connection_lost
+        self._on_power_meter_battery = on_power_meter_battery
+        self._on_power_meter_connection_lost = on_power_meter_connection_lost
         self._inactivity_timeout = inactivity_timeout
         self._discovery_poll_interval = discovery_poll_interval
         self._stop_event = threading.Event()
@@ -450,6 +558,7 @@ class AntShiftingWorker:
         self._watchdog_thread: threading.Thread | None = None
         self._node: Node | None = None
         self._device: HudShiftingDevice | None = None
+        self._power_meter_device: HudPowerMeterDevice | None = None
         self._lock = threading.Lock()
         self._last_error_msg: str | None = None
 
@@ -457,6 +566,11 @@ class AntShiftingWorker:
     def active_ant_id(self) -> int:
         with self._lock:
             return self._active_ant_id
+
+    @property
+    def active_power_meter_id(self) -> int | None:
+        with self._lock:
+            return self._active_power_meter_id
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -471,18 +585,22 @@ class AntShiftingWorker:
         self,
         device: HudShiftingDevice | None = None,
         node: Node | None = None,
+        power_meter_device: HudPowerMeterDevice | None = None,
     ) -> None:
         with self._lock:
             target_device = device if device is not None else self._device
+            target_pm_device = power_meter_device if power_meter_device is not None else self._power_meter_device
             target_node = node if node is not None else self._node
             self._device = None
+            self._power_meter_device = None
             self._node = None
 
-        if target_device is not None:
-            try:
-                target_device.close_channel()
-            except Exception as e:
-                _logger.debug(f"Error closing channel: {e}")
+        for dev in (target_pm_device, target_device):
+            if dev is not None:
+                try:
+                    dev.close_channel()
+                except Exception as e:
+                    _logger.debug(f"Error closing channel: {e}")
 
         if target_node is not None:
             try:
@@ -519,6 +637,26 @@ class AntShiftingWorker:
         _logger.debug("Polling for ANT+ Shifting device (antID=0)...")
         return None
 
+    def poll_power_meter_discovery(self) -> int | None:
+        """
+        Poll whether a PowerMeter device ID has been discovered when started with powerMeterID=0.
+        Returns the discovered device ID when newly locked, or None otherwise.
+        """
+        with self._lock:
+            if self._active_power_meter_id is None or self._active_power_meter_id != 0:
+                return self._active_power_meter_id
+            pm_device = self._power_meter_device
+            if pm_device is None:
+                return None
+            discovered_id = int(pm_device.device_id)
+            if discovered_id != 0:
+                self._active_power_meter_id = discovered_id
+                _logger.info(f"ANT+ PowerMeter device discovered (powerMeterID={discovered_id}); continuing reception")
+                return discovered_id
+
+        _logger.debug("Polling for ANT+ PowerMeter device (powerMeterID=0)...")
+        return None
+
     def check_inactivity(self, now: float | None = None) -> bool:
         """
         Check if data reception has timed out due to sensor sleep or range loss.
@@ -529,35 +667,61 @@ class AntShiftingWorker:
 
         with self._lock:
             device = self._device
+            pm_device = self._power_meter_device
             node = self._node
 
-        if device is None or device.last_rx_time is None:
-            return False
-
         current_time = time.monotonic() if now is None else now
-        if current_time - device.last_rx_time >= self._inactivity_timeout:
-            device.last_rx_time = None
-            _logger.info("ANT+ Shifting sensor inactivity timeout; resetting HUD display and reconnecting")
-            if self._on_connection_lost is not None:
-                self._on_connection_lost()
-            if node is not None:
-                try:
-                    node.stop()
-                except Exception as e:
-                    _logger.debug(f"Error stopping node on inactivity: {e}")
-            return True
-        return False
+        triggered = False
+        should_stop_node = False
+
+        if device is not None and device.last_rx_time is not None:
+            if current_time - device.last_rx_time >= self._inactivity_timeout:
+                device.last_rx_time = None
+                _logger.info("ANT+ Shifting sensor inactivity timeout; resetting HUD display and reconnecting")
+                if self._on_connection_lost is not None:
+                    self._on_connection_lost()
+                triggered = True
+                should_stop_node = True
+
+        if pm_device is not None and pm_device.last_rx_time is not None:
+            if current_time - pm_device.last_rx_time >= self._inactivity_timeout:
+                pm_device.last_rx_time = None
+                _logger.info("ANT+ PowerMeter sensor inactivity timeout; resetting power meter battery display")
+                if self._on_power_meter_connection_lost is not None:
+                    self._on_power_meter_connection_lost()
+                triggered = True
+                if device is None or device.last_rx_time is None:
+                    should_stop_node = True
+
+        if should_stop_node and node is not None:
+            try:
+                node.stop()
+            except Exception as e:
+                _logger.debug(f"Error stopping node on inactivity: {e}")
+
+        return triggered
 
     def _watchdog_loop(self) -> None:
         while not self._stop_event.wait(timeout=self._discovery_poll_interval):
             if self.active_ant_id == 0:
                 self.poll_discovery()
+            if self.active_power_meter_id == 0:
+                self.poll_power_meter_discovery()
             self.check_inactivity()
+
+    def _log_listener_started(self, label: str, device_type: int, id_name: str, device_id: int) -> None:
+        if device_id == 0:
+            _logger.info(
+                f"ANT+ {label} listener started in discovery mode (device_type=0x{device_type:02x}, {id_name}=0); polling every {self._discovery_poll_interval:.1f}s..."
+            )
+        else:
+            _logger.info(f"ANT+ {label} listener started (device_type=0x{device_type:02x}, {id_name}={device_id})")
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             node: Node | None = None
             device: HudShiftingDevice | None = None
+            pm_device: HudPowerMeterDevice | None = None
             connected = False
             try:
                 node = Node()
@@ -567,6 +731,7 @@ class AntShiftingWorker:
                         return
                     self._node = node
                     effective_ant_id = self._active_ant_id
+                    effective_pm_id = self._active_power_meter_id
 
                 node.set_network_key(0x00, ANTPLUS_NETWORK_KEY)
                 device = HudShiftingDevice(
@@ -575,24 +740,28 @@ class AntShiftingWorker:
                     on_shift_callback=self._on_shift,
                     on_battery_callback=self._on_battery,
                 )
+                if effective_pm_id is not None:
+                    pm_device = HudPowerMeterDevice(
+                        node,
+                        device_id=effective_pm_id,
+                        on_battery_callback=self._on_power_meter_battery,
+                    )
 
                 with self._lock:
                     if self._stop_event.is_set():
+                        if pm_device is not None:
+                            pm_device.close_channel()
                         device.close_channel()
                         node.stop()
                         return
                     self._device = device
+                    self._power_meter_device = pm_device
 
                 self._last_error_msg = None
                 connected = True
-                if effective_ant_id == 0:
-                    _logger.info(
-                        f"ANT+ Shifting listener started in discovery mode (device_type=0x{SHIFTING_DEVICE_TYPE:02x}, antID=0); polling every {self._discovery_poll_interval:.1f}s..."
-                    )
-                else:
-                    _logger.info(
-                        f"ANT+ Shifting listener started (device_type=0x{SHIFTING_DEVICE_TYPE:02x}, antID={effective_ant_id})"
-                    )
+                self._log_listener_started("Shifting", SHIFTING_DEVICE_TYPE, "antID", effective_ant_id)
+                if effective_pm_id is not None:
+                    self._log_listener_started("PowerMeter", POWER_METER_DEVICE_TYPE, "powerMeterID", effective_pm_id)
                 node.start()
             except Exception as e:
                 if not self._stop_event.is_set():
@@ -605,9 +774,14 @@ class AntShiftingWorker:
             finally:
                 if self.active_ant_id == 0:
                     self.poll_discovery()
-                self._close_session(device, node)
-                if connected and not self._stop_event.is_set() and self._on_connection_lost is not None:
-                    self._on_connection_lost()
+                if self.active_power_meter_id == 0:
+                    self.poll_power_meter_discovery()
+                self._close_session(device, node, pm_device)
+                if connected and not self._stop_event.is_set():
+                    if self._on_connection_lost is not None:
+                        self._on_connection_lost()
+                    if self._on_power_meter_connection_lost is not None:
+                        self._on_power_meter_connection_lost()
 
             if not self._stop_event.is_set():
                 self._stop_event.wait(timeout=DEFAULT_RETRY_DELAY)

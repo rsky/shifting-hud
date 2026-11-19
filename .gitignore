@@ -1,13 +1,14 @@
 /.venv
+/ant_log_*.log
 /build/
 /dist/
 /settings.json
 /settings_*.json
+/*.egg-info/
 __pycache__/
 .DS_Store
 .idea/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
-/ant_log_*.log
 

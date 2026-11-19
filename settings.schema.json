@@ -3,14 +3,51 @@
   "type": "object",
   "properties": {
     "antID": {
+      "description": "The ANT+ ID of the rear derailleur. Set to 0 (default) to auto-detect.",
       "type": "integer",
       "minimum": 0,
-      "maximum": 65535
+      "maximum": 65535,
+      "default": 0
+    },
+    "batteryStatus": {
+      "description": "Settings for displaying battery status.",
+      "type": "object",
+      "properties": {
+        "shifters": {
+          "description": "Whether to display the battery status of the left and right shifters.",
+          "type": "boolean",
+          "default": false
+        },
+        "frontDerailleur": {
+          "description": "Whether to display the battery status of the front derailleur.",
+          "type": "boolean",
+          "default": true
+        },
+        "rearDerailleur": {
+          "description": "Whether to display the battery status of the rear derailleur.",
+          "type": "boolean",
+          "default": true
+        },
+        "powerMeter": {
+          "description": "Whether to display the battery status of the power meter.",
+          "type": "boolean",
+          "default": false
+        },
+        "powerMeterID": {
+          "description": "The ANT+ ID of the power meter. Set to 0 (default) to auto-detect.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        }
+      }
     },
     "teeth": {
+      "description": "Tooth counts for the front chainrings and rear cassette.",
       "type": "object",
       "properties": {
         "front": {
+          "description": "The number of teeth on each front chainring.",
           "type": "array",
           "items": {
             "type": "number",
@@ -20,6 +57,7 @@
           "maxItems": 3
         },
         "rear": {
+          "description": "The number of teeth on each rear cassette cog.",
           "type": "array",
           "items": {
             "type": "number",
@@ -30,8 +68,5 @@
         }
       }
     }
-  },
-  "required": [
-    "antID"
-  ]
+  }
 }
