@@ -2,6 +2,7 @@ import contextlib
 import logging
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -9,10 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from openant.devices.common import BatteryData, BatteryStatus
 from openant.devices.shift import ShiftData, ShiftingSystemID
+from openant.easy.exception import TransferFailedException
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
+import ant_logger
 import ant_worker
 import capture
 import hud_window
@@ -259,6 +262,94 @@ def test_hud_shifting_device_packets() -> None:
     dev._on_data([82, 0xFF, 0xF1, 0x00, 0x00, 0x00, 0x00, 0x13])
     assert len(received_batteries) == 2
     assert dev.last_rx_time is not None
+
+
+def test_battery_debug_logging(caplog: pytest.LogCaptureFixture) -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    with caplog.at_level(logging.DEBUG):
+        # Send Page 82 for LeftShifter (id=3, status=Good=2, 3.0V)
+        dev._on_data([82, 0xFF, 0x34, 0x00, 0x00, 0x00, 0x00, 0x23])
+
+    assert "Raw Page 82 (Battery) packet" in caplog.text
+    assert "Battery update: ID=3 (LeftShifter)" in caplog.text
+    assert "All active battery states" in caplog.text
+    assert "Slot 3 (LeftShifter)" in caplog.text
+
+
+def test_hud_shifting_device_opens_bidirectional_channel_and_sends_ack() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_channel.id = 0
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    # Channel must be opened with ext_assign=None (not 0x01 Background Scanning)
+    assert mock_node.new_channel.call_args.args[2] is None
+
+    # Successful ACK send
+    assert dev.request_battery_page(ShiftingSystemID.LeftShifter.value) is True
+    expected_payload = [0x46, 0xFF, 0xFF, 0x03, 0xFF, 0x04, 0x52, 0x01]
+    mock_channel._ant.send_acknowledged_data.assert_called_once_with(0, expected_payload)
+    mock_channel.wait_for_event.assert_called_once()
+    mock_channel.send_broadcast_data.assert_not_called()
+
+    # Bounded retry on TransferFailedException then succeed
+    mock_channel._ant.send_acknowledged_data.reset_mock()
+    mock_channel.wait_for_event.reset_mock()
+    mock_channel.wait_for_event.side_effect = [TransferFailedException(), None]
+    with patch.object(ant_worker, "BATTERY_REQUEST_RETRY_DELAY", 0.01):
+        assert dev.request_battery_page(ShiftingSystemID.RightShifter.value, max_retries=3) is True
+    assert mock_channel._ant.send_acknowledged_data.call_count == 2
+
+
+def test_request_shifter_battery_pages_on_first_rd_battery() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    with patch.object(dev, "request_battery_page") as mock_req:
+        # First RD battery packet (battery_id=2 = RearDerailleur)
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.New))
+
+        # Wait briefly for the worker thread to spawn and execute
+        time.sleep(0.4)
+
+        # Both LeftShifter (3) and RightShifter (4) requested
+        assert mock_req.call_count == 2
+        mock_req.assert_any_call(ShiftingSystemID.LeftShifter.value)
+        mock_req.assert_any_call(ShiftingSystemID.RightShifter.value)
+
+        # Second RD battery packet does not re-request
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.New))
+        time.sleep(0.1)
+        assert mock_req.call_count == 2
+
+
+def test_no_request_when_shifters_already_received() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    with patch.object(dev, "request_battery_page") as mock_req:
+        # Pre-receive Left and Right shifters
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.LeftShifter.value, status=BatteryStatus.Good))
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RightShifter.value, status=BatteryStatus.Good))
+
+        # Then RD battery arrives
+        dev.on_battery(BatteryData(battery_id=ShiftingSystemID.RearDerailleur.value, status=BatteryStatus.New))
+
+        time.sleep(0.1)
+        assert mock_req.call_count == 0
 
 
 def test_hud_shifting_device_wildcard_discovery() -> None:
@@ -810,3 +901,118 @@ def test_hud_window_battery_visibility_and_pm(qapp: QApplication) -> None:
         assert not win_none.battery_blocks[key].isVisible()
     assert not win_none.divider.isVisible()
     win_none.close()
+
+
+def test_ant_logger_parsing_and_formatting(tmp_path: Path) -> None:
+    assert ant_logger.parse_device_type("shifting") == (0x22, 8192)
+    assert ant_logger.parse_device_type("power") == (0x0B, 8182)
+    assert ant_logger.parse_device_type("0x22") == (0x22, 8192)
+
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"antID": 43210}', encoding="utf-8")
+    assert ant_logger.resolve_ant_id(None, settings_file) == 43210
+    assert ant_logger.resolve_ant_id(12345, settings_file) == 12345
+
+    # Page 82 (LeftShifter, Good, 3.00V) with extended header for ID 12345 (0x3039)
+    ext_page82 = [82, 0xFF, 0x34, 0x00, 0x00, 0x00, 0x00, 0x23, 0x80, 0x39, 0x30, 0x22, 0x05]
+    line = ant_logger.format_packet_line(ext_page82, kind="BROADCAST", device_type=0x22)
+    assert "id=12345" in line
+    assert "page= 82 (0x52)" in line
+    assert "LeftShifter" in line
+    assert "Good(2)" in line
+    assert "3.00V" in line
+
+    # Page 1 (ShiftStatus)
+    page1 = [0x01, 0x05, 0xFF, 0x24, 0x4C, 0x00, 0x00, 0x00]
+    summary1 = ant_logger.decode_page_summary(page1, device_type=0x22)
+    assert "ShiftStatus" in summary1
+    assert "front=2/2" in summary1
+    assert "rear=5/12" in summary1
+
+
+def test_ant_broadcast_logger_filtering_and_file_output(tmp_path: Path) -> None:
+    log_file = tmp_path / "packets.log"
+    pkt_logger = ant_logger.configure_logging(log_file, debug=False)
+
+    receiver = ant_logger.AntBroadcastLogger(
+        ant_id=12345,
+        device_type=0x22,
+        ignore_page1=True,
+        dedup=True,
+        packet_logger=pkt_logger,
+    )
+
+    # Wrong device ID (9999 = 0x270F) -> ignored
+    assert (
+        receiver.handle_packet([82, 0xFF, 0x34, 0x00, 0x00, 0x00, 0x00, 0x23, 0x80, 0x0F, 0x27, 0x22, 0x05]) is False
+    )
+    assert receiver.total_packets == 0
+
+    # Page 1 from matching ID (12345 = 0x3039) -> counted, but suppressed by ignore_page1
+    assert (
+        receiver.handle_packet([0x01, 0x01, 0xFF, 0x24, 0x4C, 0x00, 0x00, 0x00, 0x80, 0x39, 0x30, 0x22, 0x05]) is False
+    )
+    assert receiver.total_packets == 1
+    assert receiver.logged_packets == 0
+
+    # Page 82 from matching ID -> logged once, duplicate suppressed
+    pkt82 = [82, 0xFF, 0x34, 0x00, 0x00, 0x00, 0x00, 0x23, 0x80, 0x39, 0x30, 0x22, 0x05]
+    assert receiver.handle_packet(pkt82) is True
+    assert receiver.handle_packet(pkt82) is False
+    assert receiver.total_packets == 3
+    assert receiver.logged_packets == 1
+    assert "page 82(0x52)=2" in receiver.format_summary()
+
+    # Flush file handler and verify log contents
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "52 FF 34 00 00 00 00 23" in log_text
+    assert "LeftShifter" in log_text
+
+
+def test_ant_logger_page79_and_tx_payload_builders(tmp_path: Path) -> None:
+    # Page 79: Byte 1 = Component ID (0x23 -> RearDerailleur / 3), Byte 2 = SW Supp (0x37=55), Byte 3 = SW Main (0x14=20)
+    page79_rd = [0x4F, 0x23, 0x37, 0x14, 0x57, 0x1E, 0xE1, 0x3B]
+    summary79 = ant_logger.decode_page_summary(page79_rd, device_type=0x22)
+    assert "comp=2(RearDerailleur)/3" in summary79
+    assert "sw=20.55" in summary79
+    assert "serial=0x3BE11E57" in summary79
+
+    args = ant_logger.parse_args(
+        [
+            "--ant-id",
+            "4111",
+            "--request-page",
+            "82",
+            "--desc1",
+            "0xFF,0x03,0x33",
+            "--tx-resp",
+            "0x04",
+            "--send-hex",
+            "46 FF FF 43 FF 04 52 01",
+        ]
+    )
+    payloads = ant_logger.build_tx_payloads_from_args(args)
+    assert payloads == [
+        [0x46, 0xFF, 0xFF, 0xFF, 0xFF, 0x04, 0x52, 0x01],
+        [0x46, 0xFF, 0xFF, 0x03, 0xFF, 0x04, 0x52, 0x01],
+        [0x46, 0xFF, 0xFF, 0x33, 0xFF, 0x04, 0x52, 0x01],
+        [0x46, 0xFF, 0xFF, 0x43, 0xFF, 0x04, 0x52, 0x01],
+    ]
+
+    # Verify ACK send path with bounded retry
+    log_file = tmp_path / "tx.log"
+    pkt_logger = ant_logger.configure_logging(log_file, debug=False)
+    receiver = ant_logger.AntBroadcastLogger(
+        ant_id=4111,
+        send_mode="ack",
+        send_retries=2,
+        packet_logger=pkt_logger,
+    )
+    mock_channel = MagicMock()
+    mock_channel.id = 0
+    receiver.channel = mock_channel
+    assert receiver.send_payload(payloads[0]) is True
+    mock_channel._ant.send_acknowledged_data.assert_called_once_with(0, payloads[0])
+    mock_channel.wait_for_event.assert_called_once()

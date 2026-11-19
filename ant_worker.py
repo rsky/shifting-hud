@@ -9,9 +9,10 @@ from typing import Any
 
 from openant.base.message import Message
 from openant.devices import ANTPLUS_NETWORK_KEY
-from openant.devices.common import BatteryData
+from openant.devices.common import BatteryData, BatteryStatus
 from openant.devices.power_meter import PowerMeter
-from openant.devices.shift import ShiftData, Shifting
+from openant.devices.shift import ShiftData, Shifting, ShiftingSystemID
+from openant.easy.exception import TransferFailedException
 from openant.easy.node import Node
 
 _logger = logging.getLogger(__name__)
@@ -22,13 +23,19 @@ SHIFTING_DEVICE_TYPE = 0x22  # 34
 POWER_METER_DEVICE_TYPE = 0x0B  # 11
 INVALID_GEAR_FRONT = 7  # 0b111 (3 bits)
 INVALID_GEAR_REAR = 31  # 0b11111 (5 bits)
+PAGE_REQUEST_DATA = 0x46  # 70 Request Data Page
 SHIFT_STATUS_PAGE = 0x01
+BATTERY_STATUS_PAGE = 82  # 0x52 Common Data Page
 STANDARD_PAYLOAD_LEN = 8
 EXTENDED_HEADER_MIN_LEN = 13
 MAX_BATTERY_SLOTS = 16
 DEFAULT_INACTIVITY_TIMEOUT = 30.0
 DEFAULT_DISCOVERY_POLL_INTERVAL = 1.0
 DEFAULT_RETRY_DELAY = 3.0
+BATTERY_REQUEST_INTERVAL = 0.3
+BATTERY_REQUEST_TX_TIMES = 4
+BATTERY_REQUEST_MAX_RETRIES = 3
+BATTERY_REQUEST_RETRY_DELAY = 0.5
 
 
 class OpenantTimeoutWarningFilter(logging.Filter):
@@ -120,8 +127,66 @@ def apply_usb_fixes() -> None:
 apply_usb_fixes()
 
 
+def build_page70_payload(
+    requested_page: int,
+    desc1: int = 0xFF,
+    desc2: int = 0xFF,
+    tx_resp: int = BATTERY_REQUEST_TX_TIMES,
+    cmd_type: int = 0x01,
+) -> list[int]:
+    """Build an 8-byte ANT+ Common Page 70 (Request Data Page) payload."""
+    return [
+        PAGE_REQUEST_DATA,  # Byte 0: Page 70 (Request Data Page)
+        0xFF,
+        0xFF,  # Byte 1-2: Serial Number (0xFF = invalid/any)
+        desc1 & 0xFF,  # Byte 3: Descriptor Byte 1 (e.g. Component ID)
+        desc2 & 0xFF,  # Byte 4: Descriptor Byte 2
+        tx_resp & 0xFF,  # Byte 5: Requested Transmission Response
+        requested_page & 0xFF,  # Byte 6: Requested Page Number
+        cmd_type & 0xFF,  # Byte 7: Command Type (0x01 = Request Data Page)
+    ]
+
+
+def close_channel_safely(node: Node | None, channel: Any) -> None:
+    """Safely close and unassign an openant channel without triggering CHANNEL_IN_WRONG_STATE."""
+    if channel is None:
+        return
+    try:
+        if node is not None and channel in node.channels:
+            channel.close()
+            if getattr(channel._ant, "_running", False):
+                try:
+                    channel.wait_for_event([Message.Code.EVENT_CHANNEL_CLOSED])
+                except Exception:
+                    pass
+                try:
+                    channel._unassign()
+                except Exception:
+                    pass
+            if channel in node.channels:
+                node.channels.remove(channel)
+    except Exception as e:
+        _logger.debug(f"Error closing channel: {e}")
+
+
+def _resolve_shifting_system_id(battery_id: int) -> ShiftingSystemID:
+    """Safely convert a 4-bit battery/component ID to ShiftingSystemID, falling back to Unknown."""
+    try:
+        return ShiftingSystemID(battery_id)
+    except ValueError:
+        return ShiftingSystemID.Unknown
+
+
+def _format_battery_voltage(data: BatteryData) -> str:
+    coarse = getattr(data, "voltage_coarse", None)
+    fractional = getattr(data, "voltage_fractional", None)
+    if coarse is not None and fractional is not None:
+        return f"{coarse + fractional:.2f}V"
+    return "N/A"
+
+
 class _HudAntDeviceMixin:
-    """Common packet filtering, wildcard discovery, and channel cleanup for HUD ANT+ devices."""
+    """Common packet filtering, wildcard discovery, bidirectional channel setup, and Page 70 ACK TX for HUD ANT+ devices."""
 
     device_id: int
     trans_type: int
@@ -145,6 +210,9 @@ class _HudAntDeviceMixin:
         self.device_id = device_id
         self.trans_type = trans_type
         self._attached = False
+        self._received_battery_ids: set[int] = set()
+        self._closing = threading.Event()
+        self._request_thread: threading.Thread | None = None
         super().__init__(  # type: ignore[call-arg]
             node=node,
             device_id=device_id,
@@ -153,6 +221,19 @@ class _HudAntDeviceMixin:
         )
         # Ensure all 16 4-bit battery IDs (0..15) can be indexed without IndexError
         self.data["batteries"] = [BatteryData() for _ in range(MAX_BATTERY_SLOTS)]
+
+    def open_channel(
+        self,
+        extended: bool = True,
+        channel_type: int | None = None,
+        ext_assign: int | None = None,
+    ) -> None:
+        """
+        Open a standard bidirectional ANT+ receive channel (ext_assign=None).
+        openant's default ext_assign=0x01 enables Background Scanning (RX-only),
+        which prevents acknowledged Page 70 requests from being transmitted.
+        """
+        super().open_channel(extended=extended, channel_type=channel_type, ext_assign=ext_assign)  # type: ignore[misc]
 
     def _accept_packet(self, data: list[int]) -> bool:
         """
@@ -186,6 +267,10 @@ class _HudAntDeviceMixin:
     def _on_data(self, data: list[int]) -> None:
         if len(data) < STANDARD_PAYLOAD_LEN or not self._accept_packet(data):
             return
+
+        if data and data[0] == BATTERY_STATUS_PAGE:
+            _logger.debug(f"Raw Page 82 (Battery) packet: {[f'0x{b:02X}' for b in data]}")
+
         if STANDARD_PAYLOAD_LEN < len(data) < EXTENDED_HEADER_MIN_LEN:
             # Truncate malformed extended payload (< 13 bytes) to 8 bytes so super()._on_data won't IndexError
             data = data[:STANDARD_PAYLOAD_LEN]
@@ -195,27 +280,92 @@ class _HudAntDeviceMixin:
 
     def close_channel(self) -> None:
         """Safely close and remove the device channel without triggering CHANNEL_IN_WRONG_STATE."""
+        self._closing.set()
+        if hasattr(self, "channel") and self.channel is not None:
+            close_channel_safely(self.node, self.channel)
+        if self._request_thread is not None and self._request_thread.is_alive():
+            self._request_thread.join(timeout=0.5)
+
+    def request_battery_page(
+        self,
+        component_id: int | None = None,
+        no_times: int = BATTERY_REQUEST_TX_TIMES,
+        max_retries: int = BATTERY_REQUEST_MAX_RETRIES,
+    ) -> bool:
+        """
+        Request Common Page 82 (Battery Status) via acknowledged Page 70 (Request Data Page).
+        If component_id is specified (e.g. 3 for LeftShifter, 4 for RightShifter),
+        it is placed in Descriptor Byte 1 (Byte 3).
+        """
         if not hasattr(self, "channel") or self.channel is None:
-            return
-        try:
-            if self.node is not None and self.channel in self.node.channels:
-                self.channel.close()
-                if getattr(self.channel._ant, "_running", False):
-                    try:
-                        self.channel.wait_for_event([Message.Code.EVENT_CHANNEL_CLOSED])
-                    except Exception:
-                        pass
-                    try:
-                        self.channel._unassign()
-                    except Exception:
-                        pass
-                if self.channel in self.node.channels:
-                    self.node.channels.remove(self.channel)
-        except Exception as e:
-            _logger.debug(f"Error closing channel: {e}")
+            return False
+
+        desc1 = component_id if component_id is not None else 0xFF
+        data = build_page70_payload(
+            requested_page=BATTERY_STATUS_PAGE,
+            desc1=desc1,
+            desc2=0xFF,
+            tx_resp=no_times & 0x7F,
+            cmd_type=0x01,
+        )
+        retries = max(1, max_retries)
+        for attempt in range(1, retries + 1):
+            if self._closing.is_set():
+                return False
+            _logger.info(
+                f"Sending Page 70 ACK request ({attempt}/{retries}) for Page 82 (Battery), "
+                f"component ID={component_id} ({[f'0x{b:02X}' for b in data]})"
+            )
+            try:
+                self.channel._ant.send_acknowledged_data(self.channel.id, data)
+                self.channel.wait_for_event([Message.Code.EVENT_TRANSFER_TX_COMPLETED])
+                _logger.info(f"Acknowledged Page 70 request for Page 82 (Battery), component ID={component_id}")
+                return True
+            except TransferFailedException as e:
+                _logger.warning(
+                    f"Page 70 ACK transfer failed ({attempt}/{retries}) for component ID={component_id}: {e}"
+                )
+                if attempt < retries and self._closing.wait(timeout=BATTERY_REQUEST_RETRY_DELAY):
+                    return False
+            except Exception as e:
+                _logger.warning(f"Failed to send Page 70 request for component ID={component_id}: {e}")
+                return False
+
+        _logger.warning(f"Page 70 ACK request failed after {retries} attempts for component ID={component_id}")
+        return False
+
+    def _log_battery_debug(self, data: BatteryData) -> None:
+        system_id = _resolve_shifting_system_id(data.battery_id)
+        status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
+        _logger.debug(
+            f"Battery update: ID={data.battery_id} ({system_id.name}), status={status_name}, "
+            f"voltage={_format_battery_voltage(data)}, operating_time={data.operating_time}s"
+        )
+
+        active_slots: list[str] = []
+        batteries: list[BatteryData] = self.data.get("batteries", [])
+        for idx, b in enumerate(batteries):
+            b_status = getattr(b, "status", None)
+            if b_status is not None and b_status != BatteryStatus.Invalid:
+                b_sys = _resolve_shifting_system_id(idx)
+                b_status_str = b_status.name if hasattr(b_status, "name") else str(b_status)
+                active_slots.append(f"[Slot {idx} ({b_sys.name}): {b_status_str}, {_format_battery_voltage(b)}]")
+
+        if active_slots:
+            _logger.debug(f"All active battery states ({len(active_slots)}): {', '.join(active_slots)}")
+        else:
+            _logger.debug("All active battery states: none recorded yet")
 
     def on_battery(self, data: BatteryData) -> None:
-        if isinstance(data, BatteryData) and self._on_battery_callback is not None:
+        if not isinstance(data, BatteryData):
+            return
+
+        self._received_battery_ids.add(data.battery_id)
+
+        if _logger.isEnabledFor(logging.DEBUG):
+            self._log_battery_debug(data)
+
+        if self._on_battery_callback is not None:
             self._on_battery_callback(dataclasses.replace(data))
 
 
@@ -235,6 +385,7 @@ class HudShiftingDevice(_HudAntDeviceMixin, Shifting):  # type: ignore[misc]
         on_battery_callback: Callable[[BatteryData], None] | None = None,
     ):
         self._on_shift_callback = on_shift_callback
+        self._rd_battery_requested: bool = False
         self._init_hud_device(
             node=node,
             device_id=device_id,
@@ -243,9 +394,42 @@ class HudShiftingDevice(_HudAntDeviceMixin, Shifting):  # type: ignore[misc]
             on_battery_callback=on_battery_callback,
         )
 
+    def _request_shifter_batteries(self) -> None:
+        """Asynchronously request Left and Right shifter battery pages via acknowledged Page 70."""
+
+        def _worker() -> None:
+            left_id = ShiftingSystemID.LeftShifter.value
+            right_id = ShiftingSystemID.RightShifter.value
+            if left_id not in self._received_battery_ids and not self._closing.is_set():
+                self.request_battery_page(left_id)
+                if self._closing.wait(timeout=BATTERY_REQUEST_INTERVAL):
+                    return
+            if right_id not in self._received_battery_ids and not self._closing.is_set():
+                self.request_battery_page(right_id)
+
+        self._request_thread = threading.Thread(target=_worker, name="RequestShifterBattery", daemon=True)
+        self._request_thread.start()
+
     def on_device_data(self, page: int, page_name: str, data: ShiftData) -> None:
         if page == SHIFT_STATUS_PAGE and isinstance(data, ShiftData) and self._on_shift_callback is not None:
             self._on_shift_callback(dataclasses.replace(data))
+
+    def on_battery(self, data: BatteryData) -> None:
+        if not isinstance(data, BatteryData):
+            return
+
+        super().on_battery(data)
+
+        # On initial reception of RearDerailleur battery, request shifter batteries if not yet received
+        if data.battery_id == ShiftingSystemID.RearDerailleur.value and not self._rd_battery_requested:
+            self._rd_battery_requested = True
+            left_id = ShiftingSystemID.LeftShifter.value
+            right_id = ShiftingSystemID.RightShifter.value
+            if left_id not in self._received_battery_ids or right_id not in self._received_battery_ids:
+                _logger.info(
+                    "First RD battery received and shifter batteries are missing; requesting LeftShifter (ID=3) and RightShifter (ID=4) via Page 70..."
+                )
+                self._request_shifter_batteries()
 
     def on_data(self, data: list[int]) -> None:
         if not data:

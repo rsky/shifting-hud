@@ -1,8 +1,10 @@
 /.venv
+/ant_log_*.log
 /build/
 /dist/
 /settings.json
 /settings_*.json
+/*.egg-info/
 __pycache__/
 .DS_Store
 .idea/
