@@ -334,11 +334,39 @@ class _HudAntDeviceMixin:
         _logger.warning(f"Page 70 ACK request failed after {retries} attempts for component ID={component_id}")
         return False
 
+    def _request_battery_pages_async(
+        self,
+        component_ids: tuple[int | None, ...],
+        thread_name: str,
+    ) -> None:
+        """Asynchronously request Common Page 82 for each missing component via acknowledged Page 70."""
+
+        def _worker() -> None:
+            sent_any = False
+            for component_id in component_ids:
+                if self._closing.is_set():
+                    return
+                if component_id is None:
+                    if self._received_battery_ids:
+                        continue
+                elif component_id in self._received_battery_ids:
+                    continue
+                if sent_any and self._closing.wait(timeout=BATTERY_REQUEST_INTERVAL):
+                    return
+                self.request_battery_page(component_id)
+                sent_any = True
+
+        self._request_thread = threading.Thread(target=_worker, name=thread_name, daemon=True)
+        self._request_thread.start()
+
+    def _format_battery_id_label(self, battery_id: int) -> str:
+        return "single" if battery_id == 0xFF else f"slot {battery_id}"
+
     def _log_battery_debug(self, data: BatteryData) -> None:
-        system_id = _resolve_shifting_system_id(data.battery_id)
+        id_label = self._format_battery_id_label(data.battery_id)
         status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
         _logger.debug(
-            f"Battery update: ID={data.battery_id} ({system_id.name}), status={status_name}, "
+            f"Battery update: ID={data.battery_id} ({id_label}), status={status_name}, "
             f"voltage={_format_battery_voltage(data)}, operating_time={data.operating_time}s"
         )
 
@@ -347,9 +375,9 @@ class _HudAntDeviceMixin:
         for idx, b in enumerate(batteries):
             b_status = getattr(b, "status", None)
             if b_status is not None and b_status != BatteryStatus.Invalid:
-                b_sys = _resolve_shifting_system_id(idx)
+                b_label = self._format_battery_id_label(idx)
                 b_status_str = b_status.name if hasattr(b_status, "name") else str(b_status)
-                active_slots.append(f"[Slot {idx} ({b_sys.name}): {b_status_str}, {_format_battery_voltage(b)}]")
+                active_slots.append(f"[Slot {idx} ({b_label}): {b_status_str}, {_format_battery_voltage(b)}]")
 
         if active_slots:
             _logger.debug(f"All active battery states ({len(active_slots)}): {', '.join(active_slots)}")
@@ -394,21 +422,15 @@ class HudShiftingDevice(_HudAntDeviceMixin, Shifting):  # type: ignore[misc]
             on_battery_callback=on_battery_callback,
         )
 
+    def _format_battery_id_label(self, battery_id: int) -> str:
+        return str(_resolve_shifting_system_id(battery_id).name)
+
     def _request_shifter_batteries(self) -> None:
         """Asynchronously request Left and Right shifter battery pages via acknowledged Page 70."""
-
-        def _worker() -> None:
-            left_id = ShiftingSystemID.LeftShifter.value
-            right_id = ShiftingSystemID.RightShifter.value
-            if left_id not in self._received_battery_ids and not self._closing.is_set():
-                self.request_battery_page(left_id)
-                if self._closing.wait(timeout=BATTERY_REQUEST_INTERVAL):
-                    return
-            if right_id not in self._received_battery_ids and not self._closing.is_set():
-                self.request_battery_page(right_id)
-
-        self._request_thread = threading.Thread(target=_worker, name="RequestShifterBattery", daemon=True)
-        self._request_thread.start()
+        self._request_battery_pages_async(
+            (ShiftingSystemID.LeftShifter.value, ShiftingSystemID.RightShifter.value),
+            thread_name="RequestShifterBattery",
+        )
 
     def on_device_data(self, page: int, page_name: str, data: ShiftData) -> None:
         if page == SHIFT_STATUS_PAGE and isinstance(data, ShiftData) and self._on_shift_callback is not None:
@@ -466,7 +488,7 @@ class HudShiftingDevice(_HudAntDeviceMixin, Shifting):  # type: ignore[misc]
 class HudPowerMeterDevice(_HudAntDeviceMixin, PowerMeter):  # type: ignore[misc]
     """
     ANT+ Bicycle Power device (Device Type 0x0B / 11) subclass that safely decodes
-    Common Page 82 (Battery Status).
+    Common Page 82 (Battery Status) and requests it via Page 70 if not yet received.
     """
 
     def __init__(
@@ -477,6 +499,7 @@ class HudPowerMeterDevice(_HudAntDeviceMixin, PowerMeter):  # type: ignore[misc]
         trans_type: int = 0,
         on_battery_callback: Callable[[BatteryData], None] | None = None,
     ):
+        self._battery_requested: bool = False
         self._init_hud_device(
             node=node,
             device_id=device_id,
@@ -485,11 +508,22 @@ class HudPowerMeterDevice(_HudAntDeviceMixin, PowerMeter):  # type: ignore[misc]
             on_battery_callback=on_battery_callback,
         )
 
+    def _request_power_meter_battery(self) -> None:
+        """Asynchronously request Common Page 82 (Battery Status) via acknowledged Page 70."""
+        self._request_battery_pages_async((None,), thread_name="RequestPowerMeterBattery")
+
     def on_data(self, data: list[int]) -> None:
         if not data:
             return
         page = data[0]
         _logger.debug(f"{self} on_data page={page:#04x}: {data}")
+
+        if not self._battery_requested and not self._received_battery_ids:
+            self._battery_requested = True
+            _logger.info(
+                "First power meter data received and battery status is missing; requesting Page 82 via Page 70..."
+            )
+            self._request_power_meter_battery()
 
 
 class AntShiftingWorker:

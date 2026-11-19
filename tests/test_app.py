@@ -778,6 +778,42 @@ def test_hud_power_meter_device_packets_and_discovery() -> None:
     assert len(received_batteries) == 1
 
 
+def test_power_meter_requests_battery_page_on_first_data() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_channel.id = 1
+    mock_node.new_channel.return_value = mock_channel
+
+    pm = ant_worker.HudPowerMeterDevice(mock_node, device_id=22136)
+    # Channel opened with ext_assign=None (standard bidirectional receive)
+    assert mock_node.new_channel.call_args.args[2] is None
+
+    with patch.object(pm, "request_battery_page") as mock_req:
+        # First Page 0x10 (Standard Power) packet triggers Page 70 battery request once
+        pm.on_data([0x10, 0x01, 0xFF, 90, 0x00, 0x01, 200, 0x00])
+        time.sleep(0.1)
+        mock_req.assert_called_once_with(None)
+
+        # Subsequent power packets do not re-request
+        pm.on_data([0x10, 0x02, 0xFF, 91, 0x00, 0x02, 205, 0x00])
+        time.sleep(0.05)
+        assert mock_req.call_count == 1
+
+
+def test_power_meter_skips_request_when_battery_already_received() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_node.new_channel.return_value = mock_channel
+
+    pm = ant_worker.HudPowerMeterDevice(mock_node, device_id=22136)
+
+    with patch.object(pm, "request_battery_page") as mock_req:
+        pm.on_battery(BatteryData(battery_id=0xFF, status=BatteryStatus.Good))
+        pm.on_data([0x10, 0x01, 0xFF, 90, 0x00, 0x01, 200, 0x00])
+        time.sleep(0.05)
+        assert mock_req.call_count == 0
+
+
 def test_worker_power_meter_discovery_and_watchdog() -> None:
     shift_lost = 0
     pm_lost = 0
