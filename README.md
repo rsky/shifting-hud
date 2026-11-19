@@ -161,6 +161,40 @@ python capture.py -s settings_1x.json -o screenshot_1x.png
 - `-s PATH`, `--settings PATH`: 設定ファイルのパスを明示的に指定（デフォルト: 自動探索）
 - `-o PATH`, `--output PATH`: 出力先 PNG ファイルのパス（デフォルト: `screenshot.png`）
 
+### ANT+ パケットのログ取得・送信テスト（`ant_logger.py`）
+
+特定の ANT+ ID から受信した生パケット（`BROADCAST` / `BURST` / `ACK`）を、タイムスタンプ・16 進ダンプ・主要ページ（Page 1〜4 / 16 / 70 / 71 / 78〜82 等）の簡易デコード付きでコンソールおよびログファイルへ出力する調査用コマンドです。Page 70（Request Data Page）等のテスト送信にも対応しています。
+
+```bash
+# 特定の ANT+ ID（Shifting）の全パケットをコンソールと自動生成ログファイルへ記録
+python ant_logger.py --ant-id 12345
+
+# Page 1（シフト状態）を除外し、Page 70 で左右シフターのバッテリー情報（Page 82）を要求して確認
+python ant_logger.py --ant-id 12345 --ignore-page1 --request-page 82 --desc1 0x03,0x04
+
+# パワーメーター（Device Type 0x0B / 11）を対象にする場合
+python ant_logger.py --ant-id 54321 --device-type power
+```
+
+主なオプション：
+
+- `--ant-id ANT_ID`: 対象の ANT+ デバイス ID（`0` でワイルドカード。省略時は `settings.json` の `antID`、無ければ `0`）
+- `-s PATH`, `--settings PATH`: `--ant-id` 省略時に参照する設定ファイルのパス（デフォルト: `./settings.json`）
+- `--device-type TYPE`: デバイスタイプ（`shifting` / `power` / `any` または整数・`0x` 付き 16 進。デフォルト: `shifting`）
+- `--period TICKS`: ANT+ チャネル周期（デフォルト: `shifting` は `8192`、`power` は `8182`）
+- `-o PATH`, `--log-file PATH`: ログ出力先ファイルパス（デフォルト: `ant_log_<ant_id>_<YYYYMMDD_HHMMSS>.log`）
+- `--ignore-page1`: 高頻度に流れる Page 1（Shift System Status）の出力を抑制
+- `--dedup`: 直前と同一の 8 バイトペイロードが連続した場合に出力を抑制
+- `--request-page PAGE`: 初回パケット受信後、Page 70 で指定ページ（例: `82` / `0x52`）を要求
+- `--desc1 BYTE[,BYTE,...]`: `--request-page` の Descriptor Byte 1（カンマ区切りで複数指定し順次送信可。デフォルト: `0xFF`）
+- `--desc2 BYTE` / `--tx-resp BYTE` / `--cmd-type BYTE`: `--request-page` の各制御バイト（デフォルト: `0xFF` / `0x04` / `0x01`）
+- `--send-hex "46 FF FF ..."`: 任意の 8 バイト 16 進ペイロードを送信（複数回指定可）
+- `--send-mode {ack,broadcast}`: 送信モード（デフォルト: `ack`）
+- `--send-interval SECONDS`: 複数ペイロード送信時の間隔秒数（デフォルト: `5.0`）
+- `--send-retries N`: `ack` モード時の最大リトライ回数（デフォルト: `3`）
+- `--background-scan`: 受信専用の Background Scanning（`ext_assign=0x01`）でチャネルを開く
+- `--debug`: `openant` 内部ログを含む詳細デバッグログを有効化
+
 ### HUD ウィンドウの操作
 
 - **移動**: ウィンドウ上をマウス左ボタンドラッグ

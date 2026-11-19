@@ -120,7 +120,6 @@ def apply_usb_fixes() -> None:
 apply_usb_fixes()
 
 
-
 class HudShiftingDevice(Shifting):  # type: ignore[misc]
     """
     ANT+ Shifting device (Device Type 0x22 / 34) subclass that safely decodes
