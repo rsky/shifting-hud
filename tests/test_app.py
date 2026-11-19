@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from openant.devices.common import BatteryData, BatteryStatus
 from openant.devices.shift import ShiftData, ShiftingSystemID
+from openant.easy.exception import TransferFailedException
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
@@ -240,6 +241,33 @@ def test_battery_debug_logging(caplog: pytest.LogCaptureFixture) -> None:
     assert "Battery update: ID=3 (LeftShifter)" in caplog.text
     assert "All active battery states" in caplog.text
     assert "Slot 3 (LeftShifter)" in caplog.text
+
+
+def test_hud_shifting_device_opens_bidirectional_channel_and_sends_ack() -> None:
+    mock_node = MagicMock()
+    mock_channel = MagicMock()
+    mock_channel.id = 0
+    mock_node.new_channel.return_value = mock_channel
+
+    dev = ant_worker.HudShiftingDevice(mock_node, device_id=1234)
+
+    # Channel must be opened with ext_assign=None (not 0x01 Background Scanning)
+    assert mock_node.new_channel.call_args.args[2] is None
+
+    # Successful ACK send
+    assert dev.request_battery_page(ShiftingSystemID.LeftShifter.value) is True
+    expected_payload = [0x46, 0xFF, 0xFF, 0x03, 0xFF, 0x04, 0x52, 0x01]
+    mock_channel._ant.send_acknowledged_data.assert_called_once_with(0, expected_payload)
+    mock_channel.wait_for_event.assert_called_once()
+    mock_channel.send_broadcast_data.assert_not_called()
+
+    # Bounded retry on TransferFailedException then succeed
+    mock_channel._ant.send_acknowledged_data.reset_mock()
+    mock_channel.wait_for_event.reset_mock()
+    mock_channel.wait_for_event.side_effect = [TransferFailedException(), None]
+    with patch.object(ant_worker, "BATTERY_REQUEST_RETRY_DELAY", 0.01):
+        assert dev.request_battery_page(ShiftingSystemID.RightShifter.value, max_retries=3) is True
+    assert mock_channel._ant.send_acknowledged_data.call_count == 2
 
 
 def test_request_shifter_battery_pages_on_first_rd_battery() -> None:

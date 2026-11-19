@@ -21,10 +21,11 @@ from ant_worker import (
     EXTENDED_HEADER_MIN_LEN,
     INVALID_GEAR_FRONT,
     INVALID_GEAR_REAR,
-    PAGE_REQUEST_DATA,
     SHIFTING_DEVICE_TYPE,
     STANDARD_PAYLOAD_LEN,
     apply_usb_fixes,
+    build_page70_payload,
+    close_channel_safely,
 )
 from settings import load_settings
 
@@ -97,26 +98,6 @@ def parse_hex_payload(value: str) -> list[int]:
             raise ValueError(f"Byte out of range (0x00..0xFF): '{tok}'")
         payload.append(b)
     return payload
-
-
-def build_page70_payload(
-    requested_page: int,
-    desc1: int = 0xFF,
-    desc2: int = 0xFF,
-    tx_resp: int = 0x04,
-    cmd_type: int = 0x01,
-) -> list[int]:
-    """Build an 8-byte ANT+ Common Page 70 (Request Data Page) payload."""
-    return [
-        PAGE_REQUEST_DATA,
-        0xFF,
-        0xFF,
-        desc1 & 0xFF,
-        desc2 & 0xFF,
-        tx_resp & 0xFF,
-        requested_page & 0xFF,
-        cmd_type & 0xFF,
-    ]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -550,23 +531,7 @@ class AntBroadcastLogger:
         self.channel = None
         self.node = None
 
-        if channel is not None:
-            try:
-                if node is not None and channel in node.channels:
-                    channel.close()
-                    if getattr(channel._ant, "_running", False):
-                        try:
-                            channel.wait_for_event([Message.Code.EVENT_CHANNEL_CLOSED])
-                        except Exception:
-                            pass
-                        try:
-                            channel._unassign()
-                        except Exception:
-                            pass
-                    if channel in node.channels:
-                        node.channels.remove(channel)
-            except Exception as e:
-                _logger.debug(f"Error closing channel: {e}")
+        close_channel_safely(node, channel)
 
         if node is not None:
             try:

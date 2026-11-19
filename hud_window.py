@@ -336,19 +336,24 @@ class ShiftingHudWindow(QWidget):
 
     def update_battery_data(self, data: BatteryData) -> None:
         """Update L, R, FD, RD battery display from BatteryData (only redraws on change)."""
-        system_id = ShiftingSystemID(data.battery_id) if data.battery_id != 0xFF else ShiftingSystemID.Unknown
+        try:
+            system_id = ShiftingSystemID(data.battery_id)
+        except ValueError:
+            system_id = ShiftingSystemID.Unknown
         component_key = BATTERY_COMPONENT_KEYS.get(system_id)
-        status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
 
-        _logger.debug(
-            f"HUD received battery data: ID={data.battery_id} ({system_id.name}) -> component={component_key}, status={status_name}"
-        )
+        if _logger.isEnabledFor(logging.DEBUG):
+            status_name = data.status.name if hasattr(data.status, "name") else str(data.status)
+            _logger.debug(
+                f"HUD received battery data: ID={data.battery_id} ({system_id.name}) -> component={component_key}, status={status_name}"
+            )
 
         if component_key is None:
-            _logger.debug(
-                f"Ignored battery data for unmapped system ID {data.battery_id} ({system_id.name}); "
-                f"mapped components are: { {k.name: v for k, v in BATTERY_COMPONENT_KEYS.items()} }"
-            )
+            if _logger.isEnabledFor(logging.DEBUG):
+                _logger.debug(
+                    f"Ignored battery data for unmapped system ID {data.battery_id} ({system_id.name}); "
+                    f"mapped components are: { {k.name: v for k, v in BATTERY_COMPONENT_KEYS.items()} }"
+                )
             return
 
         if self.battery_statuses.get(component_key) == data.status:
