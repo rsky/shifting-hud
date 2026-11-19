@@ -9,4 +9,5 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+/ant_log_*.log
 
